@@ -1,0 +1,11 @@
+// # Dashboard Interactive Control & Query Dispatcher Anchor
+//
+// Logline: Bundles allowlisted zero-shell system observation and control interaction verbs cleanly.
+//
+// Setup: Pure import shim under core/interact/ exporting verbs.oo.
+//
+// Beats:
+//   1. Import verbs.oo cleanly for CLI and HTTP /api/dashboard/interact consumers.
+
+import "core/interact/verbs.oo";
+// Stay import-only; interactive verb table and dispatcher live in verbs.oo.

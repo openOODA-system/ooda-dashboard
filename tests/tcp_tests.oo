@@ -1,0 +1,150 @@
+// # ooda-dashboard Loopback HTTP, Wasm32, SSE, WS, Interact & Refusal Tests
+//
+// Logline: Drives TCP loopback HTTP/Wasm/SSE/WS/POST/Interact routes and HTTP/owner negative-trust gates.
+// Setup: Uses TcpCap, BindCap, RandCap, FsReadCap, and ooda-standard websocket_grp decoder cleanly.
+// Beats:
+//   1. Execute TCP loopback requests against oodash_handle_http for HTML, Wasm32, WUI, WS, services, SSE.
+//   2. Verify authenticated POST action, interact (form + JSON), and OOFEEDBACK 1 endpoints.
+//   3. Assert 401 unauthorized, 400 bad verb/action/traversal, missing WS key, and disposed owner gates.
+
+import "tests/dash_harness.oo";
+import "core/store/anchor.oo";
+import "core/connect/anchor.oo";
+import "core/http/anchor.oo";
+import "ooda-standard/net/tcp_grp/tcp_conn.oo";
+import "ooda-standard/net/websocket_grp/ws_wire.oo";
+
+fn tcp_rt(
+    fs: &FsReadCap, tcp: &TcpCap, bind: &BindCap, port: Int,
+    st0: RxDashboardStore, conn_st: DashConnectState, raw_req: String
+) -> List[String] {
+    let mut wire_out: String = "";
+    let mut seq_out: String = "0";
+    let lr: Result[String, String] = tcp_bind(bind, port);
+    if lr.is_ok() {
+        let lslot: Int = slot_from_fd(lr.val);
+        let cr: Result[TcpConnection, String] = tcp_conn_open(tcp, "127.0.0.1", port);
+        let ar: Result[String, String] = tcp_accept(tcp, lslot);
+        if cr.is_ok() && ar.is_ok() {
+            let conn: TcpConnection = cr.val;
+            let sslot: Int = slot_from_fd(ar.val);
+            let _w1: Result[TcpConnection, String] = tcp_conn_write(tcp, conn, raw_req);
+            let rq: Result[String, String] = tcp_read(tcp, sslot, 8192);
+            let out: DashRouteOut = oodash_handle_http(fs,
+                if rq.is_ok() { rq.val } else { "" }, st0, conn_st, "dist/dashboard_ui.wasm", "tok-dash", "0.1.0");
+            seq_out = out.store.seq.to_string();
+            let _w2: Result[String, String] = tcp_write(tcp, sslot, out.wire);
+            let rd: Result[String, String] = tcp_conn_read(tcp, conn, 16384);
+            if rd.is_ok() { wire_out = rd.val; }
+            let _cs: Result[String, String] = tcp_close(tcp, sslot);
+            let _cc: Result[TcpConnection, String] = tcp_conn_close(tcp, conn);
+        }
+        let _cl: Result[String, String] = tcp_close(tcp, lslot);
+    }
+    return list_push(list_push(list_new(), wire_out), seq_out);
+}
+
+fn tcp_ws_ok(
+    fs: &FsReadCap, tcp: &TcpCap, bind: &BindCap, port: Int,
+    st: RxDashboardStore, conn_st: DashConnectState
+) -> Bool {
+    let rws: List[String] = tcp_rt(fs, tcp, bind, port, st, conn_st,
+        "GET /api/dashboard/ws HTTP/1.1\r\nHost: 127.0.0.1\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n");
+    let wsw: String = list_get(rws, 0);
+    let sep: Int = str_index_of(wsw, "\r\n\r\n");
+    if sep < 0 || !str_contains(wsw, "101 Switching Protocols") ||
+        !str_contains(wsw, "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=") {
+        return false;
+    }
+    let fbytes: List[Int] = oodash_str_to_bytes(str_slice(wsw, sep + 4, bytes_len(wsw)));
+    let dec: Result[WebSocketFrame, String] = ws_frame_decode_bytes(fbytes);
+    return dec.is_ok() && str_contains(dec.val.payload, "ooda-dashboard");
+}
+
+fn tcp_post_req(path: String, body: String) -> String {
+    return "POST " + path + " HTTP/1.1\r\nHost: 127.0.0.1\r\nX-OODA-Dashboard-Token: tok-dash\r\n" +
+        "Content-Length: " + bytes_len(body).to_string() + "\r\n\r\n" + body;
+}
+
+pub fn td_test_http_func(
+    fs: &FsReadCap, tcp: &TcpCap, bind: &BindCap, rand: &RandCap,
+    st: RxDashboardStore, conn_st: DashConnectState
+) -> Int {
+    let mut n: Int = 0;
+    let port: Int = 34000 + (random(rand) % 5000);
+    let rhtml: List[String] = tcp_rt(fs, tcp, bind, port, st, conn_st,
+        "GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+    let rwasm: List[String] = tcp_rt(fs, tcp, bind, port + 1, st, conn_st,
+        "GET /dashboard.wasm HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+    n = n + td_check(str_contains(list_get(rhtml, 0), "openOODA System Dashboard") &&
+        str_contains(list_get(rhtml, 0), "/dashboard.wasm") &&
+        str_contains(list_get(rwasm, 0), "application/wasm") &&
+        tcp_ws_ok(fs, tcp, bind, port + 2, st, conn_st),
+        "loopback GET /, /dashboard.wasm, and /api/dashboard/ws 101+frame");
+    let rwui: List[String] = tcp_rt(fs, tcp, bind, port + 3, st, conn_st,
+        "GET /wui HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+    let rsc: List[String] = tcp_rt(fs, tcp, bind, port + 4, st, conn_st,
+        "GET /api/wui/scene HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+    n = n + td_check(str_contains(list_get(rwui, 0), "openOODA WUI") &&
+        str_contains(list_get(rwui, 0), "Content-Security-Policy") &&
+        str_contains(list_get(rsc, 0), "\"surface\":\"wui\"") &&
+        str_contains(list_get(rsc, 0), "\"wgsl_ready\":true"),
+        "loopback GET /wui and /api/wui/scene WebGPU SDF contract");
+    let rsvc: List[String] = tcp_rt(fs, tcp, bind, port + 5, st, conn_st,
+        "GET /api/dashboard/services HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+    let rev: List[String] = tcp_rt(fs, tcp, bind, port + 6, st, conn_st,
+        "GET /api/dashboard/events HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+    n = n + td_check(str_contains(list_get(rsvc, 0), "\"ooda-dashboard\"") &&
+        str_contains(list_get(rev, 0), "text/event-stream") &&
+        str_contains(list_get(rev, 0), "\"dirty\":0"),
+        "loopback /api/dashboard/services and SSE dirty commit");
+    let ract: List[String] = tcp_rt(fs, tcp, bind, port + 7, st, conn_st,
+        tcp_post_req("/api/dashboard/action", "action=slot_rollback"));
+    let rint: List[String] = tcp_rt(fs, tcp, bind, port + 8, st, conn_st,
+        "POST /api/dashboard/interact HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n" +
+        "Content-Length: 64\r\n\r\n{\"verb\":\"regime\",\"target\":\"CORNER_PROTECT\",\"token\":\"tok-dash\"}");
+    let rfb: List[String] = tcp_rt(fs, tcp, bind, port + 9, st, conn_st,
+        tcp_post_req("/api/dashboard/feedback",
+            "category=bug&rating=5&summary=dash%20ui&note=/home/alice/x.log"));
+    n = n + td_check(str_contains(list_get(ract, 0), "\"active_slot\":\"B\"") &&
+        str_contains(list_get(rint, 0), "\"CORNER_PROTECT\"") &&
+        str_contains(list_get(rfb, 0), "\"schema\":\"OOFEEDBACK 1\"") &&
+        !str_contains(list_get(rfb, 0), "/home/alice"),
+        "authenticated POST action, JSON interact, and scrubbed feedback");
+    return n;
+}
+
+pub fn td_test_http_ref(fs: &FsReadCap, conn_st: DashConnectState) -> Int {
+    let mut n: Int = 0;
+    let st: RxDashboardStore = oodash_store_new(15);
+    let r401a: DashRouteOut = oodash_handle_http(fs,
+        "POST /api/dashboard/action HTTP/1.1\r\nContent-Length: 16\r\n\r\naction=airgap_on",
+        st, conn_st, "dist/dashboard_ui.wasm", "tok-dash", "0.1.0");
+    let r401b: DashRouteOut = oodash_handle_http(fs,
+        "POST /api/dashboard/interact HTTP/1.1\r\nContent-Length: 13\r\n\r\nverb=overview",
+        st, conn_st, "dist/dashboard_ui.wasm", "tok-dash", "0.1.0");
+    let r400a: DashRouteOut = oodash_handle_http(fs,
+        tcp_post_req("/api/dashboard/action", "action=container_start&target=nope"),
+        st, conn_st, "dist/dashboard_ui.wasm", "tok-dash", "0.1.0");
+    let r400i: DashRouteOut = oodash_handle_http(fs,
+        tcp_post_req("/api/dashboard/interact", "verb=bad;sh&target="),
+        st, conn_st, "dist/dashboard_ui.wasm", "tok-dash", "0.1.0");
+    n = n + td_wrc(if r401a.status == 401 && r401b.status == 401 && r400a.status == 400 &&
+        r400i.status == 400 { 0 } else { 1 }, 0,
+        "HTTP refuses 401 unauthenticated POST and 400 bad action/interact");
+    let ra: DashRouteOut = oodash_handle_http(fs, tcp_post_req("/api/dashboard/action", "action=airgap_on"),
+        st, conn_st, "dist/dashboard_ui.wasm", "tok-dash", "0.1.0");
+    let rlk: DashRouteOut = oodash_handle_http(fs,
+        tcp_post_req("/api/dashboard/action", "action=pool_drain&target=now"),
+        ra.store, conn_st, "dist/dashboard_ui.wasm", "tok-dash", "0.1.0");
+    let rws: DashRouteOut = oodash_handle_http(fs, "GET /api/dashboard/ws HTTP/1.1\r\nHost: localhost\r\n\r\n",
+        st, conn_st, "dist/dashboard_ui.wasm", "tok-dash", "0.1.0");
+    let rtr: DashRouteOut = oodash_handle_http(fs, "GET /%2e%2e/secret HTTP/1.1\r\nHost: localhost\r\n\r\n",
+        st, conn_st, "dist/dashboard_ui.wasm", "tok-dash", "0.1.0");
+    n = n + td_wrc(if rlk.status == 400 && rws.status == 400 && rtr.status == 400 { 0 } else { 1 }, 0,
+        "HTTP refuses AIRGAP pool_drain, missing WS key, and %2e%2e traversal");
+    let dis: RxDashboardStore = oodash_store_dispose_tel(st);
+    let dis2: RxDashboardStore = oodash_store_tick(dis, 90, 90, 10);
+    return n + td_wrc(if !rx_owner_alive(dis.rt, dis.tel_owner) && dis2.seq == dis.seq { 0 } else { 1 }, 0,
+        "disposed telemetry owner refuses ticks");
+}

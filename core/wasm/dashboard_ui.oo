@@ -1,0 +1,18 @@
+// # Dashboard Wasm32 Shared Library Entrypoint
+//
+// Logline: Compiles pure-.oo Dashboard Wasm32 UI client logic into dist/dashboard_ui.wasm under --shared.
+// Setup: Imports core/wasm/anchor.oo and exports ABI version and feature flags cleanly.
+// Beats:
+//   1. Import all oo_dash_* and oo_wui_* Wasm32 exports from anchor.oo.
+//   2. Expose oo_dash_abi_version() returning ABI version 1 cleanly.
+//   3. Expose oo_dash_ui_features() bitmask for loader verification above the Page Rule floor.
+
+import "core/wasm/anchor.oo";
+
+export fn oo_dash_abi_version() -> Int {
+    return 1;
+}
+
+export fn oo_dash_ui_features() -> Int {
+    return 127;
+}

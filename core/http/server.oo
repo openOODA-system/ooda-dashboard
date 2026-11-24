@@ -1,0 +1,142 @@
+// # Dashboard Pure-.oo HTTP/SSE/WS Server & Wasm Asset Resolver
+//
+// Logline: Binds TCP under BindCap, resolves /dashboard.wasm, loads ooda-connect services, and serves routes.
+// Setup: Reads full HTTP requests up to Content-Length over TcpCap and invokes oodash_handle_http cleanly.
+// Beats:
+//   1. Read full HTTP request headers and Content-Length body up to bounded 128 KiB limit.
+//   2. Derive session dashboard token from env OODA_DASHBOARD_TOKEN or TimeCap + SHA-256 unless passed via --token.
+//   3. Serve --once or --requests N cleanly for bounded verification or continuous interactive loops.
+
+import "ooda-standard/net/http_grp/http_server.oo";
+import "ooda-standard/net/http_server/http_server_with.oo";
+import "ooda-standard/net/tcp_grp/tcp_conn.oo";
+import "ooda-standard/fs/process/env.oo";
+import "ooda-standard/fs/time/chrono.oo";
+import "ooda-standard/sec/hash/sha256.oo";
+import "core/connect/probe.oo";
+import "core/http/routes.oo";
+
+pub type DashServeCfg = struct {
+    host: String,
+    port: Int,
+    wasm_path: String,
+    token: String,
+    max_reqs: Int,
+    health_file: String,
+    panel_file: String,
+    connect_home: String,
+    ver: String
+};
+
+pub fn oodash_resolve_wasm(fs: &FsReadCap, env: &EnvCap, ov: String) -> String {
+    if ov != "" { return ov; }
+    if path_exists(fs, "dist/dashboard_ui.wasm") { return "dist/dashboard_ui.wasm"; }
+    let home: String = env_get_or(env, "OPENOODA_HOME", env_get_or(env, "HOME", "") + "/.openooda");
+    let inst: String = home + "/share/ooda-dashboard/dashboard_ui.wasm";
+    if home != "" && path_exists(fs, inst) { return inst; }
+    return "dist/dashboard_ui.wasm";
+}
+
+pub fn oodash_session_token(env: &EnvCap, tm: &TimeCap, ov: String) -> String {
+    if ov != "" { return ov; }
+    let etok: String = env_get_or(env, "OODA_DASHBOARD_TOKEN", "");
+    if etok != "" { return etok; }
+    return str_slice(sha256("ooda-dash-" + chrono_now_ms(tm).to_string()), 0, 24);
+}
+
+fn srv_content_len(head: String) -> Int {
+    let ls: List[String] = str_split(head, "\r\n");
+    let mut i: Int = 1;
+    while i < list_len(ls) {
+        let ln: String = list_get(ls, i);
+        let col: Int = str_index_of(ln, ":");
+        if col > 0 {
+            let k: String = str_trim(str_slice(ln, 0, col));
+            if k == "Content-Length" || k == "content-length" {
+                let pr: Result[Int, String] = parse_int(str_trim(str_slice(ln, col + 1, chars_len(ln))));
+                if pr.is_ok() && pr.val >= 0 { return pr.val; }
+            }
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn srv_read_http(tcp: &TcpCap, slot: Int) -> Result[String, String] {
+    let mut acc: String = "";
+    let mut tries: Int = 0;
+    while tries < 32 {
+        let rr: Result[String, String] = tcp_read(tcp, slot, 8192);
+        if rr.is_err() { return rr; }
+        let chk: String = rr.val;
+        acc = acc + chk;
+        if bytes_len(acc) > 131072 { return Err("ooda-dashboard: request too large"); }
+        let sep: Int = str_index_of(acc, "\r\n\r\n");
+        if sep >= 0 {
+            let cl: Int = srv_content_len(str_slice(acc, 0, sep));
+            let blen: Int = bytes_len(acc) - (sep + 4);
+            if blen >= cl { return Ok(acc); }
+        }
+        if bytes_len(chk) == 0 { return Ok(acc); }
+        tries = tries + 1;
+    }
+    return Ok(acc);
+}
+
+fn srv_accept_one(
+    fs: &FsReadCap, tcp: &TcpCap, lslot: Int, s: RxDashboardStore, conn: DashConnectState,
+    wp: String, tok: String, ver: String
+) -> RxDashboardStore {
+    let ar: Result[String, String] = tcp_accept(tcp, lslot);
+    if ar.is_err() { return s; }
+    let slot: Int = slot_from_fd(ar.val);
+    let rr: Result[String, String] = srv_read_http(tcp, slot);
+    let mut ns: RxDashboardStore = s;
+    if rr.is_ok() {
+        let out: DashRouteOut = oodash_handle_http(fs, rr.val, s, conn, wp, tok, ver);
+        ns = out.store;
+        let _wr: Result[String, String] = tcp_write(tcp, slot, out.wire);
+    }
+    let _cl: Result[String, String] = tcp_close(tcp, slot);
+    return ns;
+}
+
+pub fn oodash_serve_loop(
+    fs: &FsReadCap, tcp: &TcpCap, bind: &BindCap, env: &EnvCap, tm: &TimeCap,
+    cfg: DashServeCfg
+) -> Int {
+    if !oodash_valid_host(cfg.host) || cfg.port < 1 || cfg.port > 65535 {
+        println("ooda-dashboard: invalid host or port (want 1..65535)");
+        return 2;
+    }
+    let server: HttpServer = http_server_with_host(http_server_new(cfg.port), cfg.host);
+    let lr: Result[String, String] = http_server_bind(bind, server);
+    if lr.is_err() {
+        println("ooda-dashboard: bind failed on " + cfg.host + ":" + cfg.port.to_string());
+        return 1;
+    }
+    let lslot: Int = slot_from_fd(lr.val);
+    let resolved_w: String = oodash_resolve_wasm(fs, env, cfg.wasm_path);
+    let resolved_tok: String = oodash_session_token(env, tm, cfg.token);
+    let conn: DashConnectState = oodash_connect_load(fs, env, cfg.connect_home);
+    let mut s0: RxDashboardStore = oodash_sample_host(fs, oodash_store_new(15));
+    s0.connect_home = conn.home;
+    s0.connect_services = list_len(conn.services);
+    s0.connect_mesh_ready = conn.has_identity_key && conn.has_authorized_keys;
+    let mut st: RxDashboardStore = oodash_load_state_files(fs, s0, cfg.health_file, cfg.panel_file);
+    println("ooda-dashboard listening on http://" + cfg.host + ":" + cfg.port.to_string() +
+        " (wasm=" + resolved_w + " services=" + list_len(conn.services).to_string() + ")");
+    if cfg.max_reqs > 0 {
+        let mut done: Int = 0;
+        while done < cfg.max_reqs {
+            st = srv_accept_one(fs, tcp, lslot, st, conn, resolved_w, resolved_tok, cfg.ver);
+            done = done + 1;
+        }
+        let _cl: Result[String, String] = tcp_close(tcp, lslot);
+        return 0;
+    }
+    while true {
+        st = srv_accept_one(fs, tcp, lslot, st, conn, resolved_w, resolved_tok, cfg.ver);
+    }
+    return 0;
+}

@@ -1,0 +1,121 @@
+// # ooda-dashboard v0.1.0 Functional Suite — CLI, Connect, Interact, Wasm, SSE & WS
+//
+// Logline: Exercises dist/ooda-dashboard end-to-end across CLI contracts, ooda-connect, interact, and loopback HTTP.
+// Setup: Runs dist/ooda-dashboard via ProcessCap under PATH=/nonexistent and calls tests/tcp_tests.oo.
+// Beats:
+//   1. Verify version 0.1.0, help banner, about, single-line about --json, status, verify, inspect, theme, feedback.
+//   2. Verify snapshot/sse, ooda-health SSE + ooda-panel JSON ingest, connect status/register, and interact CLI.
+//   3. Exercise loopback HTTP/Wasm/WUI/SSE/WS/POST/Interact routes and 32-iter scratch soak cleanly.
+
+import "tests/dash_harness.oo";
+import "tests/tcp_tests.oo";
+import "ooda-standard/fs/process/env.oo";
+import "ooda-standard/fs/os/fs.oo";
+import "ooda-standard/fs/os/fs/fs_remove.oo";
+import "ooda-standard/sec/hash/sha256.oo";
+
+fn t_dash_cli(p: &ProcessCap, env: &EnvCap, bin: String) -> Int {
+    let mut n: Int = 0;
+    let ver: String = td_exec(p, bin, "--version", "", "", "");
+    let help: String = td_exec(p, bin, "--help", "", "", "");
+    n = n + td_check(str_contains(ver, "0.1.0") && str_contains(help, "usage: ooda-dashboard"),
+        "version 0.1.0 + help");
+    let ab: String = td_exec(p, bin, "about", "", "", "");
+    let aj: String = td_exec(p, bin, "about", "--json", "", "");
+    let aj_ok: Bool = str_contains(aj, "\"component\":\"ooda-dashboard\"") &&
+        str_contains(aj, "\"version\":\"0.1.0\"") && str_contains(aj, "\"layer\":\"system\"") &&
+        str_contains(aj, "\"organization\":\"openOODA-system\"") && list_len(str_split(aj, "\n")) <= 2;
+    n = n + td_check(str_contains(ab, "openOODA-system") && str_contains(ab, "Theme        :") && aj_ok,
+        "about card + single-line --json");
+    let st: String = td_exec(p, bin, "--self-test", "", "", "");
+    let stj: String = td_exec(p, bin, "status", "--json", "", "");
+    let vj: String = td_exec(p, bin, "verify", "--json", "", "");
+    let ij: String = td_exec(p, bin, "inspect", "connect", "--json", "");
+    n = n + td_check(str_contains(st, "PASS") && str_contains(stj, "\"status\":\"pass\"") &&
+        str_contains(vj, "\"status\":\"pass\"") && str_contains(ij, "\"status\":\"pass\""),
+        "selftest+status+verify+inspect");
+    let th: String = td_exec(p, bin, "theme", "1982", "--json", "");
+    let _e1: Result[Void, String] = env_set(env, "OODA_THEME", "1982");
+    let nc: String = td_exec(p, bin, "about", "", "", "");
+    let _e2: Result[Void, String] = env_set(env, "OODA_THEME", "");
+    let fb: String = td_exec(p, bin, "feedback", "--json", "--summary", "dash");
+    n = n + td_check(str_contains(th, "\"1982\"") && str_contains(nc, "Theme        : 1982") &&
+        str_contains(fb, "\"schema\":\"OOFEEDBACK 1\""), "theme 1982 + env + feedback");
+    return n;
+}
+
+fn t_dash_ingest_connect_interact(
+    p: &ProcessCap, fs: &FsReadCap, fw: &FsWriteCap, bin: String, tmp: String
+) -> Int {
+    let mut n: Int = 0;
+    let hf: String = tmp + "/health.sse";
+    let pf: String = tmp + "/panel.json";
+    let ch: String = tmp + "/connect";
+    let _wh: Result[Void, String] = fs_write_file(fw, hf,
+        "event: health-delta\ndata: {\"seq\":11,\"cpu\":44,\"mem\":61,\"pressure\":61,\"dirty\":1}\n");
+    let _wp: Result[Void, String] = fs_write_file(fw, pf,
+        "{\"component\":\"ooda-panel\",\"version\":\"0.8.0\",\"vmo_slot\":2,\"status\":\"pass\"}\n");
+    let _mc: Result[Void, String] = fs_mkdir_p(fw, ch);
+    let _wi: Result[Void, String] = fs_write_file(fw, ch + "/id_ed25519.pub", "pub1\n");
+    let _wa: Result[Void, String] = fs_write_file(fw, ch + "/authorized_keys", "auth1\n");
+    let f_hf: String = "--health-file=" + hf;
+    let f_pf: String = "--panel-file=" + pf;
+    let f_ch: String = "--connect-home=" + ch;
+    let snap: String = match sys_exec(p, bin, "snapshot", "--json", f_hf, f_pf, f_ch) {
+        Ok(s) => s, Err(_) => ""
+    };
+    let sse: String = td_exec(p, bin, "sse", f_ch, "", "");
+    n = n + td_check(str_contains(snap, "\"component\":\"ooda-dashboard\"") &&
+        str_contains(snap, "\"health_seq\":11") && str_contains(snap, "\"panel_slot\":2") &&
+        str_contains(snap, "\"connect_mesh_ready\":true") && str_contains(sse, "event: dashboard-delta"),
+        "snapshot ingest + connect readiness + SSE");
+    let reg: String = match sys_exec(p, bin, "connect", "register", "--host", "127.0.0.1", "--port", "8440",
+        f_ch, "--json") { Ok(s) => s, Err(_) => "" };
+    let cst: String = match sys_exec(p, bin, "connect", "status", f_ch, "--json") {
+        Ok(s) => s, Err(_) => ""
+    };
+    n = n + td_check(str_contains(reg, "\"registered\":true") &&
+        fs_path_exists(fs, ch + "/services.oot") && str_contains(cst, "\"has_identity_key\":true"),
+        "connect register + connect status JSON");
+    let i1: String = td_exec(p, bin, "interact", "overview", f_ch, "--json");
+    let i2: String = match sys_exec(p, bin, "interact", "regime", "CORNER_PROTECT",
+        f_ch, "--json") { Ok(s) => s, Err(_) => "" };
+    n = n + td_check(str_contains(i1, "\"kind\":\"observe\"") &&
+        str_contains(i2, "\"kind\":\"control\"") && str_contains(i2, "\"CORNER_PROTECT\""),
+        "interact observe + control CLI");
+    return n;
+}
+
+pub fn main(
+    fs: &FsReadCap, fw: &FsWriteCap, proc: &ProcessCap, rand: &RandCap,
+    tcp: &TcpCap, bind: &BindCap, env: &EnvCap, _args: List[String]
+) -> Result[Int, String] {
+    let bin: String = if fs_path_exists(fs, "dist/ooda-dashboard") {
+        "dist/ooda-dashboard"
+    } else {
+        "bin/ooda-dashboard"
+    };
+    if !fs_path_exists(fs, bin) || !fs_path_exists(fs, "dist/dashboard_ui.wasm") {
+        println("FAIL missing dist/ooda-dashboard or dist/dashboard_ui.wasm");
+        return Err("missing artifact");
+    }
+    let tag: String = str_slice(sha256(random(rand).to_string()), 0, 8);
+    let tmp: String = "/tmp/ooda-dashboard-func-" + tag;
+    if fs_mkdir_p(fw, tmp).is_err() { return Err("mkdir tmp failed"); }
+    let mut n: Int = 0;
+    n = n + t_dash_cli(proc, env, bin);
+    n = n + t_dash_ingest_connect_interact(proc, fs, fw, bin, tmp);
+    let ch: String = tmp + "/connect";
+    let conn_st: DashConnectState = oodash_connect_load(fs, env, ch);
+    let mut st: RxDashboardStore = oodash_load_state_files(fs, oodash_store_new(15),
+        tmp + "/health.sse", tmp + "/panel.json");
+    st.connect_home = conn_st.home;
+    st.connect_services = list_len(conn_st.services);
+    st.connect_mesh_ready = conn_st.has_identity_key && conn_st.has_authorized_keys;
+    n = n + td_test_http_func(fs, tcp, bind, rand, st, conn_st);
+    n = n + td_check(oodash_rx_soak(32) == 32, "32-iter scratch soak");
+    let _cl: Result[Void, String] = fs_remove_tree(fw, fs, tmp);
+    println((if n == 12 { "PASS: " } else { "FAIL: " }) + "functional " + n.to_string() + "/12 assertions");
+    if n == 12 { return Ok(0); }
+    return Err("functional suite failed");
+}

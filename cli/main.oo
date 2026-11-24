@@ -1,0 +1,88 @@
+// # ooda-dashboard Entry Point — Web, Port & ooda-connect System Dashboard
+//
+// Logline: Enforces negative-trust argv guards, checks argv[0], and dispatches dashboard subcommands cleanly.
+// Setup: Requires TcpCap, BindCap, FsReadCap, FsWriteCap, ProcessCap, TimeCap, and EnvCap; zero ambient authority.
+// Beats:
+//   1. Refuse '..' traversal, control bytes, retired --persona/--mode flags, and unknown argv[0] names (exit 2).
+//   2. Route feedback, top-level --help/--version/--self-test/--json, and canonical subcommands.
+//   3. Exercise every declared capability explicitly across serve, connect, interact, feedback, and about.
+
+import "ooda-standard/fs/process/process.oo";
+import "ooda-standard/core/app/feedback_grp/fb_schema.oo";
+import "ooda-standard/core/app/feedback_grp/fb_cli.oo";
+import "cli/version.oo";
+import "cli/guard.oo";
+import "cli/about.oo";
+import "cli/cmd.oo";
+
+fn dash_prog_base(prog: String) -> String {
+    let n: Int = chars_len(prog);
+    let mut cut: Int = 0;
+    let mut i: Int = 0;
+    while i < n {
+        if char_at(prog, i) == "/" { cut = i + 1; }
+        i = i + 1;
+    }
+    if cut > 0 { return str_slice(prog, cut, n); }
+    return prog;
+}
+
+fn dash_usage(prog: String) -> Int {
+    println(prog + " " + oodash_version() + " - Capability-bounded web, port, and ooda-connect system dashboard");
+    println("usage: ooda-dashboard <subcommand> [options]");
+    println("subcommands: serve snapshot sse connect interact status verify inspect about theme feedback");
+    println("flags: -h/--help  -v/-V/--version  --self-test  --json");
+    return 0;
+}
+
+fn dash_fb(fs: &FsReadCap, fw: &FsWriteCap, pr: &ProcessCap, env: &EnvCap, args: &List[String]) -> Int {
+    let meta: FbAppMeta = fb_meta_new("ooda-dashboard", oodash_version(), "system", "cli",
+        "https://github.com/openOODA-system/ooda-dashboard");
+    return match fb_cli_run(fs, fw, env, pr, meta, args) { Ok(rc) => rc, Err(_) => 2 };
+}
+
+fn dash_top_route(prog: String, env: &EnvCap, args: List[String]) -> Int {
+    let gerr: String = dash_guard_flags(args, "-h,--help,-v,-V,--version,--self-test,--json", "");
+    if gerr != "" {
+        println(prog + ": " + gerr);
+        return 2;
+    }
+    if dash_has_flag(args, "-h") || dash_has_flag(args, "--help") { return dash_usage(prog); }
+    if dash_has_flag(args, "-v") || dash_has_flag(args, "-V") || dash_has_flag(args, "--version") {
+        println(prog + " " + oodash_version());
+        return 0;
+    }
+    if dash_has_flag(args, "--self-test") {
+        if !oodash_selftest() { return 1; }
+        println(prog + " " + oodash_version() + ": PASS (self-test)");
+        return 0;
+    }
+    if list_len(args) == 1 && list_get(args, 0) == "--json" {
+        return oodash_about_cmd(env, args);
+    }
+    println(prog + ": unsupported arguments");
+    return 2;
+}
+
+pub fn main(
+    tcp: &TcpCap, bind: &BindCap, fs: &FsReadCap, fs_write: &FsWriteCap,
+    pr: &ProcessCap, tm: &TimeCap, env: &EnvCap, args: List[String]
+) -> Int {
+    if dash_args_gate(args) != 0 {
+        println("ooda-dashboard: traversal, control char, or retired persona flag refused");
+        return 2;
+    }
+    let base: String = dash_prog_base(sys_argv0(pr));
+    if base != "ooda-dashboard" && base != "oodadash" {
+        println("ooda-dashboard: unknown invocation name '" + base + "'");
+        return 2;
+    }
+    if (list_len(&args) > 0 && list_get(&args, 0) == "feedback") ||
+        (list_len(&args) > 1 && list_get(&args, 0) == "--json" && list_get(&args, 1) == "feedback") {
+        return dash_fb(fs, fs_write, pr, env, &args);
+    }
+    if list_len(args) == 0 { return dash_usage(base); }
+    let first: String = list_get(args, 0);
+    if str_starts_with(first, "-") { return dash_top_route(base, env, args); }
+    return oodash_dispatch_sub(base, tcp, bind, fs, fs_write, tm, env, args);
+}

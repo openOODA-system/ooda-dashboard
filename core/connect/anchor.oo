@@ -1,0 +1,13 @@
+// # Dashboard ooda-connect Service Bridge Anchor
+//
+// Logline: Bundles ooda-connect home resolution, services.oot catalog loading, registration, and port probing.
+//
+// Setup: Pure barrel shim under core/connect/ exporting registry.oo and probe.oo.
+//
+// Beats:
+//   1. Import registry.oo for OOH_HOME resolution, services.oot loading, and JSON serialization.
+//   2. Import probe.oo for safe host/port validation, registration, and TcpCap health probes.
+
+import "core/connect/registry.oo";
+import "core/connect/probe.oo";
+// Stay import-only; logic lives in registry.oo and probe.oo.

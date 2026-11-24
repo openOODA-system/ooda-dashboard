@@ -1,0 +1,55 @@
+// # ooda-dashboard Functional & Refusal Test Helpers
+//
+// Logline: Provides process execution, exit-code assertion, and fixture check utilities for tests/.
+// Setup: Pure test helpers using ProcessCap; zero ambient shell or PATH lookups.
+// Beats:
+//   1. Capture stdout and assert boolean conditions cleanly across functional suites.
+//   2. Invoke ooda-dashboard binary under sys_exec_wait with 1..6 discrete argv tokens.
+//   3. Compare exit codes against negative-trust expectations fail-closed.
+
+pub fn td_check(cond: Bool, label: String) -> Int {
+    if !cond {
+        println("FAIL " + label);
+        return 0;
+    }
+    println("ok " + label);
+    return 1;
+}
+
+pub fn td_wrc(rc: Int, want: Int, what: String) -> Int {
+    if rc != want {
+        println("FAIL " + what + " rc=" + rc.to_string() + " want " + want.to_string());
+        return 0;
+    }
+    println("ok " + what);
+    return 1;
+}
+
+pub fn td_exec(p: &ProcessCap, bin: String, a: String, b: String, c: String, d: String) -> String {
+    if b == "" { return match sys_exec(p, bin, a) { Ok(s) => s, Err(_) => "" }; }
+    if c == "" { return match sys_exec(p, bin, a, b) { Ok(s) => s, Err(_) => "" }; }
+    if d == "" { return match sys_exec(p, bin, a, b, c) { Ok(s) => s, Err(_) => "" }; }
+    return match sys_exec(p, bin, a, b, c, d) { Ok(s) => s, Err(_) => "" };
+}
+
+pub fn td_wait(p: &ProcessCap, bin: String, a: String, b: String, c: String, d: String) -> Int {
+    let mut av: List[String] = list_push(list_new(), a);
+    if b != "" { av = list_push(av, b); }
+    if c != "" { av = list_push(av, c); }
+    if d != "" { av = list_push(av, d); }
+    let r: Result[Int, String] = sys_exec_wait(p, bin, av);
+    return match r { Ok(code) => code, Err(_) => 0 - 1 };
+}
+
+pub fn td_wait6(
+    p: &ProcessCap, bin: String, a: String, b: String, c: String, d: String, e: String, f: String
+) -> Int {
+    let mut av: List[String] = list_push(list_new(), a);
+    if b != "" { av = list_push(av, b); }
+    if c != "" { av = list_push(av, c); }
+    if d != "" { av = list_push(av, d); }
+    if e != "" { av = list_push(av, e); }
+    if f != "" { av = list_push(av, f); }
+    let r: Result[Int, String] = sys_exec_wait(p, bin, av);
+    return match r { Ok(code) => code, Err(_) => 0 - 1 };
+}

@@ -1,0 +1,177 @@
+// # Dashboard HTTP, Wasm32 Asset, SSE Delta, WebSocket & Interact Router
+//
+// Logline: Routes browser UI, /dashboard.wasm, SSE deltas, WS handshakes, /api/dashboard/services, and POSTs.
+// Setup: Reuses ooda-standard http_server and websocket_grp/{ws_sha1,ws_wire}; refuses unauthenticated POSTs.
+// Beats:
+//   1. Serve HTML dashboard, WebGPU /wui surface, /dashboard.wasm (\0asm verified), state, services, and SSE.
+//   2. Execute RFC 6455 WS upgrade via ws_accept_key + ws_frame_encode_bytes cleanly.
+//   3. Gate POST /api/dashboard/{action,interact,ingest,feedback} behind constant-time token checks.
+
+import "ooda-standard/net/http_grp/http_server.oo";
+import "ooda-standard/net/websocket_grp/ws_sha1.oo";
+import "ooda-standard/net/websocket_grp/ws_wire.oo";
+import "ooda-standard/core/primitives/strconv.oo";
+import "core/store/anchor.oo";
+import "core/connect/registry.oo";
+import "core/interact/verbs.oo";
+import "core/http/guard.oo";
+import "core/http/feedback.oo";
+import "core/ui/anchor.oo";
+
+pub type DashRouteOut = struct {
+    store: RxDashboardStore,
+    wire: String,
+    status: Int
+};
+
+fn hr_out(s: RxDashboardStore, status: Int, st_txt: String, ctype: String, body: String) -> DashRouteOut {
+    let wire: String = http_server_make_response(status, st_txt, ctype, body);
+    return DashRouteOut { store: s, wire: wire, status: status };
+}
+
+fn hr_serve_wasm(fs: &FsReadCap, wasm_path: String, s: RxDashboardStore) -> DashRouteOut {
+    if wasm_path == "" || oodash_has_dotdot(wasm_path) || !path_exists(fs, wasm_path) {
+        return DashRouteOut { store: s, wire: http_server_make_404(), status: 404 };
+    }
+    let rr: Result[String, String] = read_file(fs, wasm_path);
+    if rr.is_err() { return DashRouteOut { store: s, wire: http_server_make_404(), status: 404 }; }
+    let w: String = rr.val;
+    if bytes_len(w) < 8 || byte_at(w, 0) != 0 || byte_at(w, 1) != 97 ||
+        byte_at(w, 2) != 115 || byte_at(w, 3) != 109 {
+        return DashRouteOut { store: s, wire: http_server_make_500("invalid wasm binary"), status: 500 };
+    }
+    return DashRouteOut {
+        store: s,
+        wire: http_server_make_response(200, "OK", "application/wasm", w),
+        status: 200
+    };
+}
+
+fn hr_serve_ws(req: String, s: RxDashboardStore) -> DashRouteOut {
+    let key: String = oodash_header(req, "sec-websocket-key");
+    let n: Int = bytes_len(key);
+    if n < 16 || n > 64 || str_contains(key, "\r") || str_contains(key, "\n") || str_contains(key, " ") {
+        let b400: String = http_server_make_response(400, "Bad Request", "text/plain", "missing Sec-WebSocket-Key");
+        return DashRouteOut { store: s, wire: b400, status: 400 };
+    }
+    let acc: String = ws_accept_key(key);
+    let fb: List[Int] = ws_frame_encode_bytes(true, 1, list_new(), oodash_str_to_bytes(oodash_store_json(s)));
+    let hs: String = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n" +
+        "Sec-WebSocket-Accept: " + acc + "\r\n\r\n" + oodash_bytes_to_str(fb);
+    return DashRouteOut { store: s, wire: hs, status: 101 };
+}
+
+fn hr_json_str(src: String, key: String) -> String {
+    let pat: String = "\"" + key + "\":\"";
+    let at: Int = str_index_of(src, pat);
+    if at < 0 { return ""; }
+    let rest: String = str_slice(src, at + chars_len(pat), chars_len(src));
+    let qt: Int = str_index_of(rest, "\"");
+    if qt < 0 || qt > 128 { return ""; }
+    return str_slice(rest, 0, qt);
+}
+
+fn hr_handle_interact(
+    body: String, s: RxDashboardStore, conn: DashConnectState
+) -> DashRouteOut {
+    let v0: String = oodash_form_val(body, "verb");
+    let verb: String = if v0 != "" { v0 } else { hr_json_str(body, "verb") };
+    let t0: String = oodash_form_val(body, "target");
+    let tgt: String = if t0 != "" { t0 } else { hr_json_str(body, "target") };
+    let ir: Result[DashInteractOut, String] = oodash_interact_run(s, conn, verb, tgt);
+    if ir.is_err() {
+        return hr_out(s, 400, "Bad Request", "application/json", "{\"error\":\"" + ir.err + "\"}");
+    }
+    return hr_out(ir.val.store, 200, "OK", "application/json", oodash_interact_json(ir.val));
+}
+
+fn hr_handle_post(
+    req: String, path: String, s: RxDashboardStore, conn: DashConnectState, tok: String, ver: String
+) -> DashRouteOut {
+    let sep: Int = str_index_of(req, "\r\n\r\n");
+    let body: String = if sep >= 0 { str_slice(req, sep + 4, bytes_len(req)) } else { "" };
+    let h_tok: String = oodash_header(req, "x-ooda-dashboard-token");
+    let f_tok: String = oodash_form_val(body, "token");
+    let got_tok: String = if h_tok != "" { h_tok } else if f_tok != "" { f_tok } else { hr_json_str(body, "token") };
+    if !oodash_const_eq(got_tok, tok) {
+        return hr_out(s, 401, "Unauthorized", "application/json", "{\"error\":\"unauthorized\"}");
+    }
+    if path == "/api/dashboard/interact" { return hr_handle_interact(body, s, conn); }
+    if path == "/api/dashboard/ingest" {
+        let r1: Result[RxDashboardStore, String] = oodash_ingest_health_sse(s, body);
+        if r1.is_ok() { return hr_out(r1.val, 200, "OK", "application/json", oodash_store_json(r1.val)); }
+        let r2: Result[RxDashboardStore, String] = oodash_ingest_panel_json(s, body);
+        if r2.is_ok() { return hr_out(r2.val, 200, "OK", "application/json", oodash_store_json(r2.val)); }
+        return hr_out(s, 400, "Bad Request", "application/json", "{\"error\":\"bad ingest\"}");
+    }
+    if path == "/api/dashboard/feedback" {
+        let fr: Result[String, String] = oodash_feedback_json(body, ver);
+        if fr.is_ok() { return hr_out(s, 200, "OK", "application/json", fr.val); }
+        return hr_out(s, 400, "Bad Request", "application/json", "{\"error\":\"" + fr.err + "\"}");
+    }
+    let act: String = oodash_form_val(body, "action");
+    let tgt0: String = oodash_form_val(body, "target");
+    let tgt: String = if tgt0 != "" { tgt0 } else { oodash_form_val(body, "regime") };
+    if act == "tick_sample" {
+        let rc: Result[Int, String] = parse_int(oodash_form_val(body, "cpu"));
+        let rm: Result[Int, String] = parse_int(oodash_form_val(body, "mem"));
+        let rp: Result[Int, String] = parse_int(oodash_form_val(body, "ps"));
+        if rc.is_ok() && rm.is_ok() && rp.is_ok() {
+            let s1: RxDashboardStore = oodash_store_tick(s, rc.val, rm.val, rp.val);
+            return hr_out(s1, 200, "OK", "application/json", oodash_store_json(s1));
+        }
+        return hr_out(s, 400, "Bad Request", "application/json", "{\"error\":\"bad sample\"}");
+    }
+    let ar: Result[RxDashboardStore, String] = oodash_store_apply_ctrl(s, act, tgt);
+    if ar.is_err() {
+        return hr_out(s, 400, "Bad Request", "application/json", "{\"error\":\"" + ar.err + "\"}");
+    }
+    return hr_out(ar.val, 200, "OK", "application/json", oodash_store_json(ar.val));
+}
+
+pub fn oodash_handle_http(
+    fs: &FsReadCap, req: String, s: RxDashboardStore, conn: DashConnectState,
+    wasm_path: String, tok: String, ver: String
+) -> DashRouteOut {
+    let nl: Int = str_index_of(req, "\r\n");
+    let line0: String = if nl >= 0 { str_slice(req, 0, nl) } else { req };
+    let parts: List[String] = str_split(line0, " ");
+    if list_len(parts) < 2 { return hr_out(s, 400, "Bad Request", "text/plain", "400"); }
+    let meth: String = list_get(parts, 0);
+    let raw_url: String = list_get(parts, 1);
+    let q: Int = str_index_of(raw_url, "?");
+    let path: String = if q >= 0 { str_slice(raw_url, 0, q) } else { raw_url };
+    if oodash_has_dotdot(path) || oodash_has_bad_byte(path) || oodash_has_encoded(path) {
+        return hr_out(s, 400, "Bad Request", "text/plain", "400");
+    }
+    if meth == "POST" && (path == "/api/dashboard/action" || path == "/api/dashboard/interact" ||
+        path == "/api/dashboard/ingest" || path == "/api/dashboard/feedback") {
+        return hr_handle_post(req, path, s, conn, tok, ver);
+    }
+    if meth != "GET" { return hr_out(s, 405, "Method Not Allowed", "text/plain", "405"); }
+    if path == "/" || path == "/dashboard" || path == "/wui" {
+        let html: String = if path == "/wui" { oodash_wui_page_html(ver, tok) } else { oodash_page_html(ver, tok) };
+        let csp: String = "Content-Security-Policy: default-src 'self'; " +
+            "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'\r\n";
+        let hdr: String = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n" + csp +
+            "X-Content-Type-Options: nosniff\r\nContent-Length: " + bytes_len(html).to_string() +
+            "\r\nConnection: close\r\n\r\n" + html;
+        return DashRouteOut { store: s, wire: hdr, status: 200 };
+    }
+    if path == "/api/wui/scene" { return hr_out(s, 200, "OK", "application/json", oodash_wui_scene_json(ver)); }
+    if path == "/dashboard.wasm" { return hr_serve_wasm(fs, wasm_path, s); }
+    if path == "/api/dashboard/state" { return hr_out(s, 200, "OK", "application/json", oodash_store_json(s)); }
+    if path == "/api/dashboard/services" {
+        return hr_out(s, 200, "OK", "application/json", oodash_connect_services_json(conn));
+    }
+    if path == "/api/dashboard/events" {
+        let s1: RxDashboardStore = oodash_store_commit(s);
+        let body: String = oodash_store_sse(s1);
+        let sse_w: String = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream; charset=utf-8\r\n" +
+            "Cache-Control: no-cache\r\nContent-Length: " + bytes_len(body).to_string() +
+            "\r\nConnection: close\r\n\r\n" + body;
+        return DashRouteOut { store: s1, wire: sse_w, status: 200 };
+    }
+    if path == "/api/dashboard/ws" { return hr_serve_ws(req, s); }
+    return DashRouteOut { store: s, wire: http_server_make_404(), status: 404 };
+}

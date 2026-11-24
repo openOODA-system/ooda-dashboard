@@ -1,0 +1,15 @@
+// # Dashboard Wasm32 Engine Anchor
+//
+// Logline: Bundles Wasm32 E-M telemetry formatting, control-plane actions, interact payloads, and WUI kernels.
+//
+// Setup: Pure import shim aggregating wasm_em.oo, wasm_ctrl.oo, and wasm_wui.oo cleanly.
+//
+// Beats:
+//   1. Export E-M regime classifier, badge formatter, colors, and progress widths.
+//   2. Export allowlisted control-plane tab metadata, action builders, and WUI kernels.
+
+import "core/wasm/wasm_em.oo";
+import "core/wasm/wasm_ctrl.oo";
+import "core/wasm/wasm_wui.oo";
+
+// Stay import-only; exports live in wasm_em.oo, wasm_ctrl.oo, wasm_wui.oo, and dashboard_ui.oo.

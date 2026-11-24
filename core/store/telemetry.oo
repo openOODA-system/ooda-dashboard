@@ -1,0 +1,145 @@
+// # Dashboard Live Host, ooda-health & ooda-panel Telemetry Bridge
+//
+// Logline: Samples host telemetry via ooda-standard and ingests ooda-health SSE + ooda-panel JSON feeds.
+// Setup: Imports host_sys, strconv, and rx_dashboard cleanly under explicit FsReadCap with fail-closed validation.
+// Beats:
+//   1. Emit SSE dashboard-delta wire frames cleanly from RxDashboardStore state snapshots.
+//   2. Parse MemTotal/MemAvailable and CPU load via oo_host_{meminfo,loadavg}_raw into 0..100 + Ps metrics.
+//   3. Ingest live ooda-health SSE/JSON and ooda-panel JSON payloads with strict bounds refusal.
+
+import "ooda-standard/fs/os/host_grp/host_sys.oo";
+import "ooda-standard/core/primitives/strconv.oo";
+import "core/store/rx_dashboard.oo";
+
+pub fn oodash_store_sse(s: RxDashboardStore) -> String {
+    return "event: dashboard-delta\ndata: " + oodash_store_json(s) + "\n\n";
+}
+
+fn tb_parse_leading_int(raw: String) -> Result[Int, String] {
+    let n: Int = bytes_len(raw);
+    let mut i: Int = 0;
+    while i < n && (byte_at(raw, i) == 32 || byte_at(raw, i) == 58) {
+        i = i + 1;
+    }
+    let start: Int = i;
+    if i < n && byte_at(raw, i) == 45 { i = i + 1; }
+    let d0: Int = i;
+    while i < n && byte_at(raw, i) >= 48 && byte_at(raw, i) <= 57 {
+        i = i + 1;
+    }
+    if i == d0 { return Err("missing integer"); }
+    return parse_int(str_slice(raw, start, i));
+}
+
+fn tb_json_int(src: String, key: String, fallback: Int) -> Int {
+    let pat: String = "\"" + key + "\":";
+    let at: Int = str_index_of(src, pat);
+    if at < 0 { return fallback; }
+    let tail: String = str_slice(src, at + chars_len(pat), chars_len(src));
+    let pr: Result[Int, String] = tb_parse_leading_int(tail);
+    if pr.is_err() { return fallback; }
+    return pr.val;
+}
+
+fn tb_meminfo_kb(raw: String, label: String) -> Int {
+    let ls: List[String] = str_split(raw, "\n");
+    let mut i: Int = 0;
+    while i < list_len(ls) {
+        let ln: String = list_get(ls, i);
+        if str_starts_with(ln, label) {
+            let tail: String = str_slice(ln, chars_len(label), chars_len(ln));
+            let pr: Result[Int, String] = tb_parse_leading_int(tail);
+            if pr.is_ok() { return pr.val; }
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+pub fn oodash_sample_host(fs: &FsReadCap, s: RxDashboardStore) -> RxDashboardStore {
+    let mut cpu: Int = 18;
+    let mut mem: Int = 34;
+    let mr: Result[String, String] = oo_host_meminfo_raw(fs);
+    if mr.is_ok() {
+        let tot: Int = tb_meminfo_kb(mr.val, "MemTotal:");
+        let avail: Int = tb_meminfo_kb(mr.val, "MemAvailable:");
+        if tot > 0 && avail >= 0 && avail <= tot {
+            mem = ((tot - avail) * 100) / tot;
+        }
+    }
+    let lr: Result[String, String] = oo_host_loadavg_raw(fs);
+    if lr.is_ok() {
+        let dot: Int = str_index_of(lr.val, ".");
+        if dot > 0 && dot + 3 <= bytes_len(lr.val) {
+            let whole: Result[Int, String] = parse_int(str_slice(lr.val, 0, dot));
+            let frac: Result[Int, String] = parse_int(str_slice(lr.val, dot + 1, dot + 3));
+            if whole.is_ok() && frac.is_ok() {
+                cpu = whole.val * 20 + frac.val / 5;
+                if cpu < 5 { cpu = 5; }
+                if cpu > 100 { cpu = 100; }
+            }
+        }
+    }
+    let prs: Int = if cpu > mem { cpu } else { mem };
+    let mut ps: Int = 100 - prs;
+    if ps < -100 { ps = -100; }
+    if ps > 100 { ps = 100; }
+    return oodash_store_tick(s, cpu, mem, ps);
+}
+
+pub fn oodash_ingest_health_sse(s: RxDashboardStore, raw: String) -> Result[RxDashboardStore, String] {
+    if str_contains(raw, "\"component\":\"ooda-health\"") {
+        let gr: Int = tb_json_int(raw, "grant", -1);
+        let un: Int = tb_json_int(raw, "units", -1);
+        if gr < 0 || un < 0 { return Err("malformed ooda-health json"); }
+        let mut ns: RxDashboardStore = s;
+        ns.health_seq = s.health_seq + 1;
+        return Ok(oodash_store_tick(ns, rx_signal_get(s.rt, s.sig_cpu),
+            rx_signal_get(s.rt, s.sig_mem), rx_signal_get(s.rt, s.sig_ps)));
+    }
+    if !str_contains(raw, "health-delta") { return Err("invalid ooda-health feed"); }
+    let cpu: Int = tb_json_int(raw, "cpu", -1);
+    let mem: Int = tb_json_int(raw, "mem", -1);
+    let sq: Int = tb_json_int(raw, "seq", -1);
+    if cpu < 0 || cpu > 100 || mem < 0 || mem > 100 || sq < 0 {
+        return Err("ooda-health metric out of range");
+    }
+    let prs: Int = if cpu > mem { cpu } else { mem };
+    let mut ns: RxDashboardStore = oodash_store_tick(s, cpu, mem, 100 - prs);
+    ns.health_seq = sq;
+    return Ok(ns);
+}
+
+pub fn oodash_ingest_panel_json(s: RxDashboardStore, raw: String) -> Result[RxDashboardStore, String] {
+    if !str_contains(raw, "\"component\":\"ooda-panel\"") {
+        return Err("expected ooda-panel json payload");
+    }
+    let slt: Int = tb_json_int(raw, "vmo_slot", -1);
+    let act: Int = tb_json_int(raw, "active", -1);
+    if slt < 0 && act < 0 { return Err("missing panel slot or active count"); }
+    let mut ns: RxDashboardStore = s;
+    ns.panel_slot = if slt >= 0 { slt % 3 } else { act };
+    ns.seq = s.seq + 1;
+    return Ok(ns);
+}
+
+pub fn oodash_load_state_files(
+    fs: &FsReadCap, s0: RxDashboardStore, hp: String, pp: String
+) -> RxDashboardStore {
+    let mut s: RxDashboardStore = s0;
+    if hp != "" && path_exists(fs, hp) {
+        let hr: Result[String, String] = read_file(fs, hp);
+        if hr.is_ok() {
+            let ir: Result[RxDashboardStore, String] = oodash_ingest_health_sse(s, hr.val);
+            if ir.is_ok() { s = ir.val; }
+        }
+    }
+    if pp != "" && path_exists(fs, pp) {
+        let pr: Result[String, String] = read_file(fs, pp);
+        if pr.is_ok() {
+            let jr: Result[RxDashboardStore, String] = oodash_ingest_panel_json(s, pr.val);
+            if jr.is_ok() { s = jr.val; }
+        }
+    }
+    return s;
+}

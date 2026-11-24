@@ -1,0 +1,131 @@
+// # ooda-dashboard Canonical About & Theme Reporter
+//
+// Logline: Renders canonical openOODA-system v0.1.0 about cards, JSON metadata, and ootheme palettes.
+// Setup: Demands EnvCap for OODA_THEME/OOTHEME/NO_COLOR; refuses invalid targets fail-closed with exit 2.
+// Beats:
+//   1. Validate optional about/inspect targets against the canonical ooda-dashboard subcommand list.
+//   2. Emit single-line JSON with component=ooda-dashboard, version=0.1.0, layer=system, organization=openOODA-system.
+//   3. Resolve and render verified ootheme palettes cleanly with NO_COLOR support.
+
+import "cli/version.oo";
+import "cli/guard.oo";
+import "ooda-standard/core/app/ui/ootheme.oo";
+import "ooda-standard/core/format/json_writer.oo";
+import "ooda-standard/core/format/json_writer/json_writer.oo";
+import "ooda-standard/fs/process/env.oo";
+
+pub fn oodash_about_subs() -> String {
+    return "serve,snapshot,sse,connect,interact,status,verify,inspect,about,theme,feedback";
+}
+
+pub fn oodash_about_target_ok(t: String) -> Bool {
+    let csv: String = "," + oodash_about_subs() + ",oodadash,";
+    return t != "" && str_contains(csv, "," + t + ",");
+}
+
+pub fn oodash_resolve_theme(env: &EnvCap) -> OoThemePalette {
+    let nc: String = env_get_or(env, "NO_COLOR", "");
+    if nc != "" { return ootheme_resolve("none"); }
+    let ot: String = env_get_or(env, "OOTHEME", env_get_or(env, "OODA_THEME", "ooda-dark"));
+    if ot == "" || !ootheme_known(ot) { return ootheme_resolve("ooda-dark"); }
+    let pal: OoThemePalette = ootheme_resolve(ot);
+    if !ootheme_verify(pal) { return ootheme_resolve("ooda-dark"); }
+    return pal;
+}
+
+pub fn oodash_about_json(pal_name: String, target: String) -> String {
+    let mut w: JsonWriter = json_writer_start_object(json_writer_new(false));
+    w = json_writer_key(w, "component");
+    w = json_writer_string(w, "ooda-dashboard");
+    w = json_writer_key(w, "version");
+    w = json_writer_string(w, oodash_version());
+    w = json_writer_key(w, "layer");
+    w = json_writer_string(w, "system");
+    w = json_writer_key(w, "organization");
+    w = json_writer_string(w, "openOODA-system");
+    w = json_writer_key(w, "summary");
+    w = json_writer_string(w, "Capability-bounded web, port, and ooda-connect system dashboard");
+    w = json_writer_key(w, "subcommands");
+    w = json_writer_string(w, oodash_about_subs());
+    w = json_writer_key(w, "capabilities");
+    w = json_writer_string(w, "Tcp,Bind,FsRead,FsWrite,Process,Time,Env");
+    w = json_writer_key(w, "theme");
+    w = json_writer_string(w, pal_name);
+    if target != "" {
+        w = json_writer_key(w, "target");
+        w = json_writer_string(w, target);
+    }
+    w = json_writer_end_object(w);
+    return json_writer_finish(w);
+}
+
+pub fn oodash_about_cmd(env: &EnvCap, rest: List[String]) -> Int {
+    let mut as_json: Bool = false;
+    let mut target: String = "";
+    let mut i: Int = 0;
+    while i < list_len(rest) {
+        let a: String = list_get(rest, i);
+        i = i + 1;
+        if a == "--json" {
+            as_json = true;
+            continue;
+        }
+        if a == "-h" || a == "--help" {
+            println("usage: ooda-dashboard about [subcommand] [--json]");
+            return 0;
+        }
+        if str_starts_with(a, "-") || target != "" || !oodash_about_target_ok(a) {
+            println("ooda-dashboard: about refused argument '" + a + "'");
+            return 2;
+        }
+        target = a;
+    }
+    let pal: OoThemePalette = oodash_resolve_theme(env);
+    if as_json {
+        println(oodash_about_json(pal.name, target));
+        return 0;
+    }
+    println("Binary       : ooda-dashboard (v" + oodash_version() + ")");
+    println("Organization : openOODA-system (https://github.com/openOODA-system/ooda-dashboard)");
+    if target != "" { println("Subcommand   : " + target + " -> run `ooda-dashboard " + target + " [args...]`"); }
+    println("Summary      : Capability-bounded web, port, and ooda-connect system dashboard");
+    println("Subcommands  : " + oodash_about_subs());
+    println("Capabilities : Tcp,Bind,FsRead,FsWrite,Process,Time,Env");
+    println("Theme        : " + pal.name + " (NO_COLOR disables ANSI)");
+    return 0;
+}
+
+pub fn oodash_theme_cmd(env: &EnvCap, rest: List[String]) -> Int {
+    let mut as_json: Bool = false;
+    let mut name: String = "";
+    let mut i: Int = 0;
+    while i < list_len(rest) {
+        let a: String = list_get(rest, i);
+        i = i + 1;
+        if a == "--json" {
+            as_json = true;
+            continue;
+        }
+        if a == "-h" || a == "--help" {
+            println("usage: ooda-dashboard theme [<name>] [--json]");
+            return 0;
+        }
+        if str_starts_with(a, "-") || name != "" {
+            println("ooda-dashboard: theme refused argument '" + a + "'");
+            return 2;
+        }
+        name = a;
+    }
+    let pick: String = if name != "" { name } else { oodash_resolve_theme(env).name };
+    if !ootheme_known(pick) {
+        println("ooda-dashboard: unknown theme '" + pick + "'");
+        return 2;
+    }
+    let pal: OoThemePalette = ootheme_resolve(pick);
+    if as_json {
+        println(ootheme_json(pal));
+        return 0;
+    }
+    println(ootheme_tui_frame(pal, "ooda-dashboard", oodash_version(), "system", "PASS"));
+    return 0;
+}

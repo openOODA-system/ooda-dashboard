@@ -1,0 +1,150 @@
+// # Dashboard Pure-.oo Dark UI HTML & Interactive ooda-connect Console Emitter
+//
+// Logline: Emits the self-contained openOODA System Dashboard HTML page with zero external assets.
+// Setup: Bounded cleanly under the Page Rule; renders telemetry, Pool/GPU, ooda-connect services, and console.
+// Beats:
+//   1. Render responsive dark-phosphor HTML5 layout and CSS tokens without external CDNs.
+//   2. Emit E-M telemetry, Firewall, A/B Slots, Realms, Pool/GPU, and ooda-connect & Interact cards.
+//   3. Wire /dashboard.wasm, EventSource dashboard-delta, /api/dashboard/services, and authenticated POSTs.
+
+fn html_head_css(ver: String, tok: String) -> String {
+    let h1: String = "<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'>";
+    let h2: String = "<meta name='viewport' content='width=device-width,initial-scale=1'>";
+    let h3: String = "<meta name='ooda-tok' content='" + tok + "'><title>openOODA Dashboard " + ver + "</title>";
+    let c1: String = "<style>:root{--bg:#0b0f14;--card:#121821;--bd:#223042;--fg:#e6edf3;--mut:#8b9bb0;}";
+    let c2: String = "body{margin:0;font-family:monospace;background:var(--bg);color:var(--fg);padding:20px;}";
+    let c3: String = ".hd{display:flex;justify-content:space-between;align-items:center;";
+    let c4: String = "border-bottom:1px solid var(--bd);padding-bottom:12px;margin-bottom:16px;}";
+    let c5: String = ".grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:14px;}";
+    let c6: String = ".card{background:var(--card);border:1px solid var(--bd);border-radius:8px;padding:14px;}";
+    let c7: String = ".bar{height:8px;background:#1e2936;border-radius:4px;overflow:hidden;margin:6px 0;}";
+    let c8: String = ".fill{height:100%;background:#50fa7b;transition:width .2s;}";
+    let c9: String = "button{background:#1b2634;color:var(--fg);border:1px solid var(--bd);";
+    let c10: String = "padding:6px 10px;border-radius:6px;cursor:pointer;margin:4px 4px 0 0;}";
+    let c11: String = "input,select{background:#1b2634;color:var(--fg);border:1px solid var(--bd);border-radius:6px;";
+    let c12: String = "padding:5px;width:100%;margin:4px 0;box-sizing:border-box;}";
+    let c13: String = "pre{background:#080c10;border:1px solid var(--bd);padding:8px;overflow:auto;max-height:140px;}";
+    let c14: String = "</style></head>";
+    return h1 + h2 + h3 + c1 + c2 + c3 + c4 + c5 + c6 + c7 + c8 + c9 + c10 + c11 + c12 + c13 + c14;
+}
+
+fn html_body_core(ver: String) -> String {
+    let b1: String = "<body><div class='hd'><div><strong>openOODA System Dashboard</strong> ";
+    let b2: String = "<span>v" + ver + "</span> | <a href='/wui' style='color:#00e5ff'>WUI</a></div>";
+    let b3: String = "<div id='badge'>INIT</div></div><div class='grid'><div class='card'><h3>E-M Telemetry</h3>";
+    let b4: String = "<div>CPU <span id='cpu'>0</span>%</div><div class='bar'><div id='cpub' class='fill'></div></div>";
+    let b5: String = "<div>MEM <span id='mem'>0</span>%</div><div class='bar'><div id='memb' class='fill'></div></div>";
+    let b6: String = "<div>Ps=<span id='ps'>0</span> Regime=<span id='reg'>CRUISE</span> ";
+    let b7: String = "SSE=<span id='sse'>0</span> Health=<span id='hseq'>0</span></div></div>";
+    let b8: String = "<div class='card'><h3>Firewall &amp; Airgap</h3>";
+    let b9: String = "<div>Airgap=<span id='air'>false</span> Epoch=<span id='fw'>1</span></div>";
+    let b10: String = "<button onclick='act(0,0)'>Airgap On</button><button onclick='act(1,0)'>Airgap Off</button>";
+    let b11: String = "<button onclick='act(3,0)'>CRUISE</button><button onclick='act(4,0)'>CORNER</button></div>";
+    let b12: String = "<div class='card'><h3>A/B Boot Slots</h3>";
+    let b13: String = "<div>Active=<span id='slot'>A</span> Rollback=<span id='rb'>0</span></div>";
+    let b14: String = "<button onclick='act(2,0)'>Rollback A/B Slot</button></div>";
+    let b15: String = "<div class='card'><h3>Containers &amp; Realms</h3>";
+    let b16: String = "<div>syncthing=<span id='c0'>-</span> jellyfin=<span id='c1'>-</span></div>";
+    let b17: String = "<div>app-realm-0=<span id='r0'>-</span> proton=<span id='r1'>-</span></div>";
+    let b18: String = "<button onclick='uact(0,0,0)'>Start Syncthing</button>";
+    let b19: String = "<button onclick='uact(0,1,0)'>Stop Syncthing</button>";
+    let b20: String = "<button onclick='uact(1,2,0)'>Quarantine Realm</button></div>";
+    return b1 + b2 + b3 + b4 + b5 + b6 + b7 + b8 + b9 + b10 + b11 + b12 + b13 + b14 +
+        b15 + b16 + b17 + b18 + b19 + b20;
+}
+
+fn html_body_nas_connect() -> String {
+    let n1: String = "<div class='card'><h3>OODA-Pool &amp; /shares/* (OOFN1)</h3>";
+    let n2: String = "<div>Parity=<span id='ppar'>P+Q</span> Health=<span id='phlt'>100</span>%</div>";
+    let n3: String = "<div>Tier0=<span id='pt0'>28</span>% Drain=<span id='pdrn'>cruise</span> ";
+    let n4: String = "Shares=<span id='shn'>3</span> OOFN1=<span id='oep'>1</span></div>";
+    let n5: String = "<button onclick='act(6,0)'>Scrub Pool</button>";
+    let n6: String = "<button onclick='act(7,0)'>Drain Tier-0</button>";
+    let n7: String = "<button onclick='act(8,0)'>Revoke OOFN1</button></div>";
+    let n8: String = "<div class='card'><h3>GPU &amp; Realm Passthrough</h3>";
+    let n9: String = "<div>Util=<span id='gpuu'>14</span>% Profile=<span id='gpup'>compute-parity</span> ";
+    let n10: String = "Mode=<span id='gpum'>host-shared</span></div>";
+    let n11: String = "<button onclick='act(9,0)'>Compute+Parity</button>";
+    let n12: String = "<button onclick='act(10,0)'>Inference</button>";
+    let n13: String = "<button onclick='act(11,0)'>Realm VFIO</button></div>";
+    let c1: String = "<div class='card'><h3>ooda-connect &amp; Interactive Console</h3>";
+    let c2: String = "<div>Services=<span id='csvc'>3</span> Mesh=<span id='cmesh'>false</span> ";
+    let c3: String = "Last=<span id='cint'>overview</span></div>";
+    let c4: String = "<button onclick='qint(0)'>Overview</button><button onclick='qint(1)'>Services</button>";
+    let c5: String = "<input id='intv' placeholder='verb (e.g. overview, regime, rollback)'>";
+    let c6: String = "<input id='intt' placeholder='target (optional)'>";
+    let c7: String = "<button onclick='runInt()'>Run Interact</button>";
+    let c8: String = "<pre id='conout'>ready</pre></div>";
+    return n1 + n2 + n3 + n4 + n5 + n6 + n7 + n8 + n9 + n10 + n11 + n12 + n13 +
+        c1 + c2 + c3 + c4 + c5 + c6 + c7 + c8;
+}
+
+fn html_body_feedback() -> String {
+    let f1: String = "<div class='card'><h3>Feedback (OOFEEDBACK 1)</h3>";
+    let f2: String = "<select id='fbcat'><option value='ux'>ux</option><option value='bug'>bug</option>";
+    let f3: String = "<option value='idea'>idea</option><option value='praise'>praise</option></select>";
+    let f4: String = "<input id='fbrat' type='number' min='1' max='5' value='5'>";
+    let f5: String = "<input id='fbsum' placeholder='Summary (scrubbed locally)'>";
+    let f6: String = "<input id='fbnote' placeholder='Details (optional)'>";
+    let f7: String = "<button onclick='sendFb()'>Build Feedback Bundle</button>";
+    let f8: String = "<div id='fbout'></div></div></div>";
+    return f1 + f2 + f3 + f4 + f5 + f6 + f7 + f8;
+}
+
+fn html_script_ui() -> String {
+    let s1: String = "<script>(function(){let wx=null,dec=new TextDecoder();";
+    let s2: String = "const tk=(document.querySelector('meta[name=ooda-tok]')||{}).content||'';";
+    let s3: String = "function rd(l){if(!wx||!l)return '';const b=Number(wx.oo_wasm_scratch_base());";
+    let s4: String = "return dec.decode(new Uint8Array(wx.memory.buffer,b,Number(l)));}";
+    let s5: String = "function sv(id,v){const el=document.getElementById(id);if(el)el.textContent=v;}";
+    let s6: String = "function ui(d){sv('cpu',d.cpu);sv('mem',d.mem);sv('ps',d.ps);sv('reg',d.regime);";
+    let s7: String = "sv('sse',d.seq);sv('hseq',d.health_seq);sv('air',d.airgap);sv('fw',d.fw_epoch);";
+    let s8: String = "sv('slot',d.active_slot);sv('rb',d.rollback_epoch);sv('c0',d.syncthing);sv('c1',d.jellyfin);";
+    let s9: String = "sv('r0',d.app_realm_0);sv('r1',d.steam_proton);sv('ppar',d.pool_parity);";
+    let s10: String = "sv('phlt',d.pool_health);sv('pt0',d.tier0_pct);sv('pdrn',d.pool_drain_state);";
+    let s11: String = "sv('shn',d.shares_active);sv('oep',d.oofn1_epoch);sv('gpuu',d.gpu_util);";
+    let s12: String = "sv('gpup',d.gpu_profile);sv('gpum',d.gpu_passthrough);";
+    let s13: String = "sv('csvc',d.connect_services);sv('cmesh',d.connect_mesh_ready);sv('cint',d.last_interact);";
+    let s14: String = "if(wx){document.getElementById('cpub').style.width=";
+    let s15: String = "Number(wx.oo_dash_bar_width(BigInt(d.cpu)))+'%';";
+    let s16: String = "document.getElementById('memb').style.width=";
+    let s17: String = "Number(wx.oo_dash_bar_width(BigInt(d.mem)))+'%';";
+    let s18: String = "sv('badge',rd(wx.oo_dash_format_badge(BigInt(d.cpu),BigInt(d.mem),";
+    let s19: String = "BigInt(d.ps),BigInt(d.airgap?1:0))));}}";
+    return s1 + s2 + s3 + s4 + s5 + s6 + s7 + s8 + s9 + s10 + s11 + s12 + s13 +
+        s14 + s15 + s16 + s17 + s18 + s19;
+}
+
+fn html_script_boot() -> String {
+    let s1: String = "function post(b){if(!b)return;fetch('/api/dashboard/action',{method:'POST',";
+    let s2: String = "headers:{'X-OODA-Dashboard-Token':tk},body:b}).then(r=>r.json()).then(ui);}";
+    let s3: String = "function postInt(b){if(!b)return;fetch('/api/dashboard/interact',{method:'POST',";
+    let s4: String = "headers:{'X-OODA-Dashboard-Token':tk},body:b}).then(r=>r.json()).then(d=>{";
+    let s5: String = "sv('conout',JSON.stringify(d));if(d.result&&d.result.cpu!==undefined)ui(d.result);});}";
+    let s6: String = "window.act=(k,a)=>wx&&post(rd(wx.oo_dash_action_body(BigInt(k),BigInt(a))));";
+    let s7: String = "window.uact=(r,o,i)=>wx&&post(rd(wx.oo_dash_unit_action(BigInt(r),BigInt(o),BigInt(i))));";
+    let s8: String = "window.qint=k=>wx&&postInt(rd(wx.oo_dash_interact_body(BigInt(k))));";
+    let s9: String = "window.runInt=()=>{const v=document.getElementById('intv').value||'overview';";
+    let s10: String = "const t=document.getElementById('intt').value||'';";
+    let s11: String = "postInt('verb='+encodeURIComponent(v)+'&target='+encodeURIComponent(t));};";
+    let s12: String = "window.sendFb=()=>{const g=id=>document.getElementById(id).value||'';";
+    let s13: String = "const q='category='+encodeURIComponent(g('fbcat'))+'&rating='+encodeURIComponent(g('fbrat'))";
+    let s14: String = "+'&summary='+encodeURIComponent(g('fbsum'))+'&note='+encodeURIComponent(g('fbnote'));";
+    let s15: String = "fetch('/api/dashboard/feedback',{method:'POST',headers:{'X-OODA-Dashboard-Token':tk},body:q})";
+    let s16: String = ".then(r=>r.json()).then(d=>{const el=document.getElementById('fbout');el.textContent='';";
+    let s17: String = "if(d.submit_url&&d.submit_url.startsWith('https://')){const a=document.createElement('a');";
+    let s18: String = "a.href=d.submit_url;a.target='_blank';a.rel='noopener noreferrer';";
+    let s19: String = "a.textContent='Submit ('+String(d.sha256||'').slice(0,8)+')';el.appendChild(a);}});};";
+    let s20: String = "fetch('/dashboard.wasm').then(r=>r.arrayBuffer()).then(b=>WebAssembly.instantiate(b))";
+    let s21: String = ".then(({instance})=>{wx=instance.exports;fetch('/api/dashboard/state').then(r=>r.json()).then(ui);";
+    let s22: String = "fetch('/api/dashboard/services').then(r=>r.json()).then(d=>sv('conout',JSON.stringify(d)));";
+    let s23: String = "const es=new EventSource('/api/dashboard/events');";
+    let s24: String = "es.addEventListener('dashboard-delta',e=>ui(JSON.parse(e.data)));});})();</script></body></html>";
+    return s1 + s2 + s3 + s4 + s5 + s6 + s7 + s8 + s9 + s10 + s11 + s12 +
+        s13 + s14 + s15 + s16 + s17 + s18 + s19 + s20 + s21 + s22 + s23 + s24;
+}
+
+pub fn oodash_page_html(ver: String, tok: String) -> String {
+    return html_head_css(ver, tok) + html_body_core(ver) + html_body_nas_connect() +
+        html_body_feedback() + html_script_ui() + html_script_boot();
+}

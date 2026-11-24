@@ -1,0 +1,124 @@
+// # Dashboard ooda-connect Registration & TCP Port Probe
+//
+// Logline: Safely registers ooda-dashboard in services.oot and probes advertised TCP service ports under TcpCap.
+// Setup: Refuses invalid hosts, out-of-range ports, and '..' traversal before touching filesystem or TCP sockets.
+// Beats:
+//   1. Validate hostnames and host:port targets cleanly without ambient shell or DNS tricks.
+//   2. Upsert ooda-dashboard HTTP endpoint into $OOH_HOME/services.oot under FsReadCap/FsWriteCap.
+//   3. Execute bounded non-blocking probe connections via TcpCap and close sockets immediately.
+
+import "core/connect/registry.oo";
+import "ooda-standard/core/primitives/strconv.oo";
+import "ooda-standard/fs/file/fs_grp/fs_invariants.oo";
+import "ooda-standard/net/tcp_grp/tcp_conn.oo";
+
+pub type DashPortTarget = struct {
+    host: String,
+    port: Int,
+    ok: Bool
+};
+
+pub fn oodash_valid_host(hv: String) -> Bool {
+    if hv == "" || bytes_len(hv) > 253 || str_contains(hv, "..") { return false; }
+    if str_starts_with(hv, "-") || str_starts_with(hv, ".") { return false; }
+    if str_ends_with(hv, ".") || str_ends_with(hv, "-") { return false; }
+    let mut i: Int = 0;
+    while i < bytes_len(hv) {
+        let b: Int = byte_at(hv, i);
+        if b < 33 || b == 127 { return false; }
+        if b == 47 || b == 58 || b == 64 || b == 92 || b == 37 || b == 35 || b == 63 { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
+pub fn oodash_connect_parse_target(tgt: String) -> DashPortTarget {
+    let mut clean: String = str_trim(tgt);
+    if str_starts_with(clean, "http://") { clean = str_slice(clean, 7, chars_len(clean)); }
+    let col: Int = str_index_of(clean, ":");
+    if col <= 0 { return DashPortTarget { host: "", port: 0, ok: false }; }
+    let h: String = str_slice(clean, 0, col);
+    let ps: String = str_slice(clean, col + 1, chars_len(clean));
+    let pr: Result[Int, String] = parse_int(ps);
+    if !oodash_valid_host(h) || pr.is_err() {
+        return DashPortTarget { host: "", port: 0, ok: false };
+    }
+    let port: Int = match pr { Ok(v) => v, Err(_) => 0 };
+    if port < 1 || port > 65535 { return DashPortTarget { host: "", port: 0, ok: false }; }
+    return DashPortTarget { host: h, port: port, ok: true };
+}
+
+pub fn oodash_connect_register(
+    fs: &FsReadCap, fw: &FsWriteCap, env: &EnvCap, override: String, host: String, port: Int
+) -> Result[String, String] {
+    if !oodash_valid_host(host) || port < 1 || port > 65535 {
+        return Err("ooda-dashboard: invalid host or port for connect register");
+    }
+    let dir: String = oodash_connect_home(env, override);
+    if dir == "" || !oo_path_ok(dir) {
+        return Err("ooda-dashboard: invalid ooda-connect home directory");
+    }
+    if fs_mkdir_p(fw, dir).is_err() {
+        return Err("ooda-dashboard: failed to prepare ooda-connect home");
+    }
+    let spath: String = dir + "/services.oot";
+    let prev: String = if fs_path_exists(fs, spath) {
+        match fs_read_file(fs, spath) { Ok(s) => s, Err(_) => "" }
+    } else { "" };
+    let lines: List[String] = str_split(prev, "\n");
+    let mut out: String = "";
+    let mut i: Int = 0;
+    while i < list_len(lines) {
+        let row: String = str_trim(list_get(lines, i));
+        if chars_len(row) > 0 && !str_starts_with(row, "ooda-dashboard\t") {
+            out = out + row + "\n";
+        }
+        i = i + 1;
+    }
+    let ep: String = host + ":" + port.to_string();
+    out = out + "ooda-dashboard\thttp\t" + ep + "\tTcp,Process\n";
+    if fs_write_file(fw, spath, out).is_err() {
+        return Err("ooda-dashboard: failed writing services.oot");
+    }
+    return Ok(spath);
+}
+
+pub fn oodash_connect_probe(tcp: &TcpCap, host: String, port: Int) -> Bool {
+    if !oodash_valid_host(host) || port < 1 || port > 65535 { return false; }
+    let cr: Result[TcpConnection, String] = tcp_conn_open(tcp, host, port);
+    if cr.is_err() { return false; }
+    let conn: TcpConnection = match cr {
+        Ok(c) => c,
+        Err(_) => TcpConnection { slot: -1, host: "", port: 0, is_connected: false, bytes_sent: 0, bytes_recv: 0 }
+    };
+    let _cl: Result[TcpConnection, String] = tcp_conn_close(tcp, conn);
+    return true;
+}
+
+pub fn oodash_connect_probe_all(tcp: &TcpCap, st: DashConnectState) -> String {
+    let mut w: JsonWriter = json_writer_start_object(json_writer_new(false));
+    w = json_writer_key(w, "component");
+    w = json_writer_string(w, "ooda-dashboard");
+    w = json_writer_key(w, "probes");
+    w = json_writer_start_array(w);
+    let mut i: Int = 0;
+    while i < list_len(st.services) {
+        let s: DashConnectSvc = list_get(st.services, i);
+        if s.kind == "http" || s.kind == "tcp" {
+            let pt: DashPortTarget = oodash_connect_parse_target(s.target);
+            let up: Bool = if pt.ok { oodash_connect_probe(tcp, pt.host, pt.port) } else { false };
+            w = json_writer_start_object(w);
+            w = json_writer_key(w, "name");
+            w = json_writer_string(w, s.name);
+            w = json_writer_key(w, "target");
+            w = json_writer_string(w, s.target);
+            w = json_writer_key(w, "reachable");
+            w = json_writer_bool(w, up);
+            w = json_writer_end_object(w);
+        }
+        i = i + 1;
+    }
+    w = json_writer_end_array(w);
+    w = json_writer_end_object(w);
+    return json_writer_finish(w);
+}

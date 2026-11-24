@@ -1,0 +1,13 @@
+name=ooda-dashboard
+version=0.1.0
+layer=system
+category=NT
+tags=openooda,system,NT,ooda-dashboard,dashboard,web,port,connect,wasm,sse,ws,wui,telemetry,control
+upstream=dashboard
+status=shipped
+description=Capability-bounded web, port, and ooda-connect system dashboard for live telemetry observation, control-plane actions, and allowlisted system interaction under explicit TcpCap, BindCap, FsReadCap, FsWriteCap, ProcessCap, TimeCap, and EnvCap.
+caps=Tcp,Bind,FsRead,FsWrite,Process,Time,Env
+deps=ooda-standard
+entry=cli/main.oo
+payload=cli/main.oo
+personas=ooda-dashboard,oodadash

@@ -1,0 +1,68 @@
+// # Dashboard WebGPU SDF/MSDF & Canvas2D WUI Surface Emitter
+//
+// Logline: Emits /wui 3-Tier Beat HTML5 canvas surface and /api/wui/scene WebGPU/SDF/spring descriptors.
+// Setup: Pure emitters importing ooda-standard/core/app/ui/render2d/ and json_writer; zero external CDNs.
+// Beats:
+//   1. Evaluate BeatViewSpec, SDF rounded box, MSDF glyph coverage, and 120Hz VBlank spring state into JSON.
+//   2. Emit self-contained HTML5 /wui dark-phosphor shell with Setup, Action, and Inspect UI tiers.
+//   3. Bridge /dashboard.wasm oo_wui_* exports into navigator.gpu WebGPU shader or Canvas2D snap fallback.
+
+import "ooda-standard/core/app/ui/render2d/sdf_prim.oo";
+import "ooda-standard/core/app/ui/render2d/msdf_glyph.oo";
+import "ooda-standard/core/app/ui/render2d/spring_clock.oo";
+import "ooda-standard/core/app/ui/render2d/beat_ui.oo";
+import "ooda-standard/core/format/json_writer.oo";
+
+pub fn oodash_wui_scene_json(ver: String) -> String {
+    let bv: BeatViewSpec = beat_view_new("openOODA WUI Surface", 3, 3, 0.94, 0.14, true);
+    let sd: Float = sdf_round_box(0.0, 0.0, 120.0, 40.0, 10.0);
+    let cov: Float = msdf_coverage(0.5, 0.75, 0.8, 4.0, 1.0);
+    let sp: SpringState = spring_step_vblank(spring_new(0.0, 100.0, 320.0, 28.0), 8333333, true);
+    let ok_sdf: Bool = sd < 0.0 && cov > 0.0 && sp.pos > 0.0;
+    return "{\"surface\":\"wui\",\"version\":\"" + json_escape_str(ver) + "\"," +
+        "\"renderer\":\"webgpu-sdf+msdf\",\"fallback\":\"canvas2d-snap\"," +
+        "\"vblank_hz\":120,\"wgsl_ready\":" + (if ok_sdf { "true" } else { "false" }) + "," +
+        "\"wasm_url\":\"/dashboard.wasm\",\"beat\":" + beat_view_json(bv) + "}";
+}
+
+fn wui_head_css(ver: String, tok: String) -> String {
+    let h1: String = "<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'>";
+    let h2: String = "<meta name='viewport' content='width=device-width,initial-scale=1'>";
+    let h3: String = "<meta name='ooda-tok' content='" + tok + "'><title>openOODA WUI " + ver + "</title>";
+    let c1: String = "<style>:root{--bg:#0b0f14;--card:#121821;--bd:#223042;--fg:#e6edf3;}";
+    let c2: String = "body{margin:0;font-family:monospace;background:var(--bg);color:var(--fg);padding:20px;}";
+    let c3: String = ".tiers{display:grid;grid-template-columns:repeat(3,minmax(200px,1fr));gap:12px;}";
+    let c4: String = ".card{background:var(--card);border:1px solid var(--bd);border-radius:8px;padding:12px;}";
+    let c5: String = "canvas{width:100%;height:140px;background:#080c10;border:1px solid var(--bd);";
+    let c6: String = "border-radius:6px;margin-top:12px;}</style></head>";
+    return h1 + h2 + h3 + c1 + c2 + c3 + c4 + c5 + c6;
+}
+
+fn wui_body_script(ver: String) -> String {
+    let b1: String = "<body><h2>openOODA WUI v" + ver + " (3-Tier Beat / WebGPU SDF)</h2>";
+    let b2: String = "<div class='tiers'><div class='card'><strong>1. Setup</strong>";
+    let b3: String = "<div id='wui-mode'>detecting</div></div><div class='card'><strong>2. Action</strong>";
+    let b4: String = "<button id='wui-snap'>CPU Snap Step</button></div><div class='card'>";
+    let b5: String = "<strong>3. Inspect</strong><div id='wui-inspect'>vblank=120Hz</div></div></div>";
+    let b6: String = "<canvas id='wui-cv' width='640' height='140'></canvas>";
+    let s1: String = "<script>(function(){const dec=new TextDecoder(),cv=document.getElementById('wui-cv');";
+    let s2: String = "const mode=document.getElementById('wui-mode'),ins=document.getElementById('wui-inspect');";
+    let s3: String = "let wx=null;const rd=n=>{const b=Number(wx.oo_wasm_scratch_base());";
+    let s4: String = "return dec.decode(new Uint8Array(wx.memory.buffer,b,Number(n)));};";
+    let s5: String = "const draw2d=(p)=>{const c=cv.getContext('2d');c.fillStyle='#080c10';";
+    let s6: String = "c.fillRect(0,0,640,140);c.fillStyle='#00e5ff';c.fillRect(20,40,Math.max(12,p),48);};";
+    let s7: String = "fetch('/dashboard.wasm').then(r=>r.arrayBuffer()).then(b=>WebAssembly.instantiate(b))";
+    let s8: String = ".then(({instance})=>{wx=instance.exports;const wg=rd(wx.oo_wui_wgsl_sdf_shader());";
+    let s9: String = "const hasGpu=Boolean(navigator.gpu)&&wg.includes('sdRoundBox');";
+    let s10: String = "mode.textContent=hasGpu?'WebGPU-SDF':'Canvas2D-Fallback';";
+    let s11: String = "const stp=wx.oo_wui_spring_step_milli(0n,0n,10000n,8333n,hasGpu?1n:0n);";
+    let s12: String = "ins.textContent='spring='+stp+' cap='+wx.oo_wui_capabilities_mask();draw2d(Number(stp)/30);";
+    let s13: String = "document.getElementById('wui-snap').onclick=()=>{";
+    let s14: String = "const s=wx.oo_wui_spring_step_milli(0n,0n,10000n,8333n,0n);draw2d(Number(s)/30);};});})();</script>";
+    return b1 + b2 + b3 + b4 + b5 + b6 + s1 + s2 + s3 + s4 + s5 + s6 + s7 + s8 + s9 + s10 + s11 + s12 + s13 + s14 +
+        "</body></html>";
+}
+
+pub fn oodash_wui_page_html(ver: String, tok: String) -> String {
+    return wui_head_css(ver, tok) + wui_body_script(ver);
+}

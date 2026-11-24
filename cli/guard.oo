@@ -1,0 +1,122 @@
+// # ooda-dashboard Negative-Trust Argv & Flag Guard
+//
+// Logline: Refuses traversal tokens, control bytes, retired persona flags, and unknown CLI flags with exit 2.
+// Setup: Pure argument scanner imported by cli/main.oo, cli/cmd.oo, cli/connect_cli.oo, and cli/about.oo.
+// Beats:
+//   1. Reject '..' traversal, NUL/control characters, and retired --persona/--mode flags fail-closed.
+//   2. Validate boolean and valued CLI options against explicit per-command allowlists.
+//   3. Split --flag=value options and guard dash-prefixed operands cleanly.
+
+pub fn dash_arg_ok(s: String) -> Bool {
+    if str_contains(s, "..") { return false; }
+    let n: Int = bytes_len(s);
+    let mut i: Int = 0;
+    while i < n {
+        let b: Int = byte_at(s, i);
+        if b < 32 || b == 127 { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
+pub fn dash_retired_flag(a: String) -> Bool {
+    if a == "--persona" || a == "--mode" || a == "--personas" || a == "--list-personas" { return true; }
+    if str_starts_with(a, "--persona=") || str_starts_with(a, "--mode=") ||
+        str_starts_with(a, "--list-personas=") {
+        return true;
+    }
+    return false;
+}
+
+pub fn dash_args_gate(args: List[String]) -> Int {
+    let mut i: Int = 0;
+    while i < list_len(args) {
+        let a: String = list_get(args, i);
+        if !dash_arg_ok(a) || dash_retired_flag(a) { return 2; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn dash_csv_has(csv: String, tok: String) -> Bool {
+    if chars_len(csv) == 0 { return false; }
+    let parts: List[String] = str_split(csv, ",");
+    let mut i: Int = 0;
+    while i < list_len(parts) {
+        if list_get(parts, i) == tok { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
+pub fn dash_split_eq_args(args: List[String]) -> List[String] {
+    let mut out: List[String] = list_new();
+    let mut i: Int = 0;
+    let mut dd: Bool = false;
+    while i < list_len(args) {
+        let a: String = list_get(args, i);
+        if !dd && a == "--" { dd = true; }
+        let eq: Int = if !dd && str_starts_with(a, "--") { str_index_of(a, "=") } else { 0 - 1 };
+        if eq > 2 {
+            out = list_push(out, str_slice(a, 0, eq));
+            out = list_push(out, str_slice(a, eq + 1, chars_len(a)));
+        } else {
+            out = list_push(out, a);
+        }
+        i = i + 1;
+    }
+    return out;
+}
+
+pub fn dash_guard_flags(args: List[String], allow_csv: String, valued_csv: String) -> String {
+    let mut i: Int = 0;
+    let n: Int = list_len(args);
+    while i < n {
+        let a: String = list_get(args, i);
+        if a == "--" {
+            if i + 1 < n && str_starts_with(list_get(args, i + 1), "-") {
+                return "refused operand '" + list_get(args, i + 1) + "'";
+            }
+            return "";
+        }
+        if !str_starts_with(a, "-") || chars_len(a) <= 1 {
+            i = i + 1;
+            continue;
+        }
+        if dash_csv_has(valued_csv, a) {
+            if i + 1 >= n || str_starts_with(list_get(args, i + 1), "-") {
+                return "option '" + a + "' requires a non-flag value";
+            }
+            i = i + 2;
+            continue;
+        }
+        if !dash_csv_has(allow_csv, a) { return "unrecognized option '" + a + "'"; }
+        i = i + 1;
+    }
+    return "";
+}
+
+pub fn dash_has_flag(args: List[String], flag: String) -> Bool {
+    let mut i: Int = 0;
+    while i < list_len(args) {
+        let a: String = list_get(args, i);
+        if a == "--" { return false; }
+        if a == flag { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
+pub fn dash_flag_val(args: List[String], flag: String) -> String {
+    let mut i: Int = 0;
+    let n: Int = list_len(args);
+    let eq: String = flag + "=";
+    while i < n {
+        let a: String = list_get(args, i);
+        if a == "--" { return ""; }
+        if a == flag && i + 1 < n { return list_get(args, i + 1); }
+        if str_starts_with(a, eq) { return str_slice(a, chars_len(eq), chars_len(a)); }
+        i = i + 1;
+    }
+    return "";
+}

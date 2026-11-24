@@ -1,0 +1,104 @@
+// # Dashboard Feedback Route & WebSocket Byte Helpers
+//
+// Logline: Builds OOFEEDBACK 1 JSON bundles from POST bodies and converts byte lists for WebSocket framing.
+// Setup: Imports strconv and ooda-standard feedback_grp/{fb_schema,fb_scrub,fb_io}; zero silent network I/O.
+// Beats:
+//   1. Decode x-www-form-urlencoded feedback fields cleanly while stripping control bytes.
+//   2. Scrub user paths/emails/secrets and emit SHA-256-sealed OOFEEDBACK 1 JSON + split GitHub URL.
+//   3. Provide compact String <-> List[Int] byte bridges for ooda-standard WebSocket wire framing.
+
+import "ooda-standard/core/primitives/strconv.oo";
+import "ooda-standard/core/app/feedback_grp/fb_schema.oo";
+import "ooda-standard/core/app/feedback_grp/fb_scrub.oo";
+import "ooda-standard/core/app/feedback_grp/fb_io.oo";
+
+fn fb_rt_hex_nibble(b: Int) -> Int {
+    if b >= 48 && b <= 57 { return b - 48; }
+    if b >= 65 && b <= 70 { return b - 55; }
+    if b >= 97 && b <= 102 { return b - 87; }
+    return -1;
+}
+
+fn fb_rt_url_decode(raw: String) -> String {
+    let n: Int = bytes_len(raw);
+    let cap: Int = if n > 2400 { 2400 } else { n };
+    let mut out: List[Int] = bytes_new();
+    let mut i: Int = 0;
+    while i < cap {
+        let b: Int = byte_at(raw, i);
+        if b == 43 {
+            out = bytes_push(out, 32);
+            i = i + 1;
+        } else if b == 37 && (i + 2) < cap {
+            let hi: Int = fb_rt_hex_nibble(byte_at(raw, i + 1));
+            let lo: Int = fb_rt_hex_nibble(byte_at(raw, i + 2));
+            if hi >= 0 && lo >= 0 {
+                let dec: Int = (hi << 4) | lo;
+                if dec == 10 || (dec >= 32 && dec < 127) { out = bytes_push(out, dec); }
+                i = i + 3;
+            } else {
+                out = bytes_push(out, b);
+                i = i + 1;
+            }
+        } else {
+            if b == 10 || (b >= 32 && b < 127) { out = bytes_push(out, b); }
+            i = i + 1;
+        }
+    }
+    return bytes_to_str(out);
+}
+
+fn fb_rt_field(body: String, key: String) -> String {
+    let parts: List[String] = str_split(body, "&");
+    let pfx: String = key + "=";
+    let mut i: Int = 0;
+    while i < list_len(parts) {
+        let seg: String = str_trim(list_get(parts, i));
+        if str_starts_with(seg, pfx) {
+            let val: String = str_slice(seg, chars_len(pfx), chars_len(seg));
+            return str_trim(fb_rt_url_decode(val));
+        }
+        i = i + 1;
+    }
+    return "";
+}
+
+pub fn oodash_feedback_json(body: String, ver: String) -> Result[String, String] {
+    let raw_cat: String = fb_rt_field(body, "category");
+    let cat: String = fb_cat_norm(if raw_cat == "" { "ux" } else { raw_cat });
+    if cat == "" { return Err("invalid feedback category"); }
+    let raw_rat: String = fb_rt_field(body, "rating");
+    let mut rv: Int = 0;
+    if raw_rat != "" {
+        rv = match parse_int(raw_rat) { Ok(v) => v, Err(_) => -1 };
+        if rv < 1 || rv > 5 { return Err("rating must be 1..5"); }
+    }
+    let summary: String = fb_scrub_text(fb_rt_field(body, "summary"), 120);
+    let note: String = fb_scrub_text(fb_rt_field(body, "note"), 2000);
+    let meta: FbAppMeta = fb_meta_new("ooda-dashboard", ver, "system", "web",
+        "https://github.com/openOODA-system/ooda-dashboard");
+    let b: FbBundle = fb_bundle_new(&meta, cat, rv, summary, note, "");
+    let url: String = fb_submit_url(&b);
+    if !fb_query_url_safe(url) { return Err("invalid submit url"); }
+    return Ok(fb_bundle_json(&b, url, ""));
+}
+
+pub fn oodash_str_to_bytes(s: String) -> List[Int] {
+    let mut out: List[Int] = list_new();
+    let mut i: Int = 0;
+    while i < bytes_len(s) {
+        out = list_push(out, byte_at(s, i));
+        i = i + 1;
+    }
+    return out;
+}
+
+pub fn oodash_bytes_to_str(bs: List[Int]) -> String {
+    let mut out: List[Int] = bytes_new();
+    let mut i: Int = 0;
+    while i < list_len(bs) {
+        out = bytes_push(out, list_get(bs, i) & 255);
+        i = i + 1;
+    }
+    return bytes_to_str(out);
+}

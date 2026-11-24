@@ -1,0 +1,100 @@
+// # Dashboard WebGPU WUI SDF, MSDF, VBlank Spring & 3-Tier Beat Wasm32 Engine
+//
+// Logline: Exports fixed-milli SDF, MSDF median/alpha, VBlank-locked spring physics, and WGSL shaders in Wasm32.
+// Setup: Zero imports; uses oo_wasm scratch buffers for WebGPU/Canvas2D fallback compatibility under --shared.
+// Beats:
+//   1. Evaluate milli-unit 2D rounded-box SDF, MSDF median-of-3 coverage, and integer Newton sqrt.
+//   2. Step 120Hz VBlank-locked springs with automatic hw_accel=0 immediate target snap.
+//   3. Validate 3-Tier Beat contrast/hierarchy and publish compact WGSL SDF/MSDF shader text.
+
+export fn oo_wui_capabilities_mask() -> Int {
+    return 31;
+}
+
+export fn oo_wui_sdf_round_box_milli(px: Int, py: Int, hx: Int, hy: Int, rad: Int) -> Int {
+    let r: Int = if rad < 0 { 0 } else { rad };
+    let apx: Int = if px < 0 { 0 - px } else { px };
+    let apy: Int = if py < 0 { 0 - py } else { py };
+    let qx: Int = apx - hx + r;
+    let qy: Int = apy - hy + r;
+    let ax: Int = if qx > 0 { qx } else { 0 };
+    let ay: Int = if qy > 0 { qy } else { 0 };
+    let mx: Int = if qx > qy { qx } else { qy };
+    let ins: Int = if mx < 0 { mx } else { 0 };
+    return ins + wui_isqrt(ax * ax + ay * ay) - r;
+}
+
+export fn oo_wui_msdf_median_milli(r: Int, g: Int, b: Int) -> Int {
+    let mn: Int = if r < g { r } else { g };
+    let mx: Int = if r > g { r } else { g };
+    if b < mn { return mn; }
+    if b > mx { return mx; }
+    return b;
+}
+
+export fn oo_wui_msdf_alpha_milli(r: Int, g: Int, b: Int, px_range_milli: Int, scale_milli: Int) -> Int {
+    let pr: Int = if px_range_milli <= 0 { 4000 } else { px_range_milli };
+    let sc: Int = if scale_milli <= 0 { 1000 } else { scale_milli };
+    let sd: Int = oo_wui_msdf_median_milli(r, g, b) - 500;
+    let cov: Int = (sd * pr * sc) / 1000000 + 500;
+    if cov < 0 { return 0; }
+    if cov > 1000 { return 1000; }
+    return cov;
+}
+
+export fn oo_wui_spring_step_milli(pos: Int, vel: Int, target: Int, dt_us: Int, hw_accel: Int) -> Int {
+    if hw_accel == 0 { return target; }
+    let dt0: Int = if dt_us < 500 { 500 } else if dt_us > 33000 { 33000 } else { dt_us };
+    let sub_us: Int = dt0 / 4;
+    let mut p: Int = pos;
+    let mut v: Int = vel;
+    let mut i: Int = 0;
+    while i < 4 {
+        let acc: Int = 320 * (target - p) - 28 * v;
+        v = v + (acc * sub_us) / 1000000;
+        p = p + (v * sub_us) / 1000000;
+        i = i + 1;
+    }
+    return p;
+}
+
+export fn oo_wui_beat_valid(tiers: Int, actions: Int, l_fg_milli: Int, l_bg_milli: Int) -> Int {
+    if tiers < 1 || tiers > 3 || actions < 1 || actions > 3 { return 0; }
+    if l_fg_milli < 0 || l_fg_milli > 1000 || l_bg_milli < 0 || l_bg_milli > 1000 { return 0; }
+    let d: Int = l_fg_milli - l_bg_milli;
+    let ad: Int = if d < 0 { 0 - d } else { d };
+    return if ad >= 450 { 1 } else { 0 };
+}
+
+export fn oo_wui_wgsl_sdf_shader() -> Int {
+    oo_wasm_heap_reset();
+    let s1: String = "fn sdRoundBox(p:vec2f,b:vec2f,r:f32)->f32{let q=abs(p)-b+vec2f(r);";
+    let s2: String = "return min(max(q.x,q.y),0.0)+length(max(q,vec2f(0.0)))-r;}";
+    let s3: String = "fn median3(r:f32,g:f32,b:f32)->f32{return max(min(r,g),min(max(r,g),b));}";
+    let mut off: Int = 0;
+    let mut part: Int = 0;
+    while part < 3 {
+        let seg: String = if part == 0 { s1 } else if part == 1 { s2 } else { s3 };
+        let mut i: Int = 0;
+        while i < bytes_len(seg) {
+            oo_wasm_scratch_write_u8(off + i, byte_at(seg, i));
+            i = i + 1;
+        }
+        off = off + bytes_len(seg);
+        part = part + 1;
+    }
+    return off;
+}
+
+fn wui_isqrt(v: Int) -> Int {
+    if v <= 0 { return 0; }
+    let mut x: Int = if v > 65536 { v / 2 } else { v };
+    let mut i: Int = 0;
+    while i < 32 {
+        let nx: Int = (x + v / x) / 2;
+        if nx >= x { return x; }
+        x = nx;
+        i = i + 1;
+    }
+    return x;
+}

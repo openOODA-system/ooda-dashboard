@@ -1,0 +1,58 @@
+// # Dashboard OODA-Pool, OOVFS-Net (OOFN1) & GPU/Realm Passthrough Controller
+//
+// Logline: Applies capability-gated pool scrub, E-M Tier-0 drain, OOFN1 share revocation, and GPU profile transitions.
+// Setup: Imports core/store/rx_dashboard cleanly; enforces AIRGAP_LOCKDOWN interlock and strict target allowlists.
+// Beats:
+//   1. Update reactive pool health, Tier-0 percentage, and GPU utilization signals glitch-free in batches.
+//   2. Enforce AIRGAP_LOCKDOWN refusal on pool_drain and strict allowlists on gpu_profile targets.
+//   3. Bump OOFN1 share revocation epoch in a single cycle for instant peer capability invalidation.
+
+import "core/store/rx_dashboard.oo";
+
+fn dash_nas_set_sig(s: RxDashboardStore, sid: Int, val: Int) -> RxDashboardStore {
+    let mut r: ReactiveRuntime = rx_batch_begin(s.rt);
+    r = rx_signal_set(r, sid, val);
+    r = rx_batch_end(r);
+    let mut ns: RxDashboardStore = s;
+    ns.rt = r;
+    return ns;
+}
+
+pub fn oodash_apply_nas_gpu(s: RxDashboardStore, act: String, tgt: String) -> Result[RxDashboardStore, String] {
+    if act == "pool_scrub" {
+        let mut ns: RxDashboardStore = dash_nas_set_sig(s, s.sig_pool_health, 100);
+        ns.pool_scrub_epoch = s.pool_scrub_epoch + 1;
+        return Ok(ns);
+    }
+    if act == "pool_drain" {
+        if rx_signal_get(s.rt, s.sig_airgap) != 0 {
+            return Err("locked in AIRGAP_LOCKDOWN");
+        }
+        if tgt != "now" && tgt != "cruise" && tgt != "pause" {
+            return Err("invalid pool_drain target");
+        }
+        let mut ns: RxDashboardStore = if tgt == "now" {
+            dash_nas_set_sig(s, s.sig_tier0_pct, 8)
+        } else { s };
+        ns.pool_drain_state = if tgt == "now" { "draining" } else { tgt };
+        return Ok(ns);
+    }
+    if act == "share_revoke" {
+        let mut ns: RxDashboardStore = s;
+        ns.oofn1_epoch = s.oofn1_epoch + 1;
+        return Ok(ns);
+    }
+    if act == "gpu_profile" {
+        if tgt != "compute-parity" && tgt != "inference" && tgt != "realm-vfio" && tgt != "disabled" {
+            return Err("invalid gpu_profile target");
+        }
+        let u: Int = if tgt == "disabled" { 0 } else if tgt == "inference" { 45 }
+            else if tgt == "realm-vfio" { 32 } else { 18 };
+        let mut ns: RxDashboardStore = dash_nas_set_sig(s, s.sig_gpu_util, u);
+        ns.gpu_profile = tgt;
+        ns.gpu_passthrough = if tgt == "realm-vfio" { "iommu-vfio" }
+            else if tgt == "disabled" { "off" } else { "host-shared" };
+        return Ok(ns);
+    }
+    return Err("unknown control action");
+}

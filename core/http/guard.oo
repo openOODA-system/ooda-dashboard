@@ -1,0 +1,117 @@
+// # Dashboard HTTP Request, Traversal & Token Guards
+//
+// Logline: Validates HTTP request paths/encoding, extracts headers and form fields, and compares tokens safely.
+// Setup: Pure string/byte helpers with zero ambient authority; rejects '..', control chars, and double encoding.
+// Beats:
+//   1. Detect '..', control bytes, and single/double percent-encoded traversal payloads fail-closed.
+//   2. Extract case-insensitive HTTP headers and URL-form parameters safely.
+//   3. Compare session dashboard tokens in constant time without early exit on content match.
+
+pub fn oodash_has_dotdot(s: String) -> Bool {
+    return str_contains(s, "..");
+}
+
+pub fn oodash_has_bad_byte(s: String) -> Bool {
+    let n: Int = bytes_len(s);
+    let mut i: Int = 0;
+    while i < n {
+        let b: Int = byte_at(s, i);
+        if b < 32 || b == 127 { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
+fn guard_hex_nib(c: Int) -> Int {
+    if c >= 48 && c <= 57 { return c - 48; }
+    if c >= 65 && c <= 70 { return c - 55; }
+    if c >= 97 && c <= 102 { return c - 87; }
+    return 0 - 1;
+}
+
+fn guard_pct_decode(s: String) -> String {
+    let n: Int = bytes_len(s);
+    let mut out: List[Int] = bytes_new();
+    let mut i: Int = 0;
+    while i < n {
+        let b: Int = byte_at(s, i);
+        if b == 37 && i + 2 < n {
+            let v1: Int = guard_hex_nib(byte_at(s, i + 1));
+            let v2: Int = guard_hex_nib(byte_at(s, i + 2));
+            if v1 >= 0 && v2 >= 0 {
+                out = bytes_push(out, v1 * 16 + v2);
+                i = i + 3;
+                continue;
+            }
+        }
+        out = bytes_push(out, b);
+        i = i + 1;
+    }
+    return bytes_to_str(out);
+}
+
+pub fn oodash_has_encoded(s: String) -> Bool {
+    let d: String = guard_pct_decode(s);
+    if d != s {
+        if oodash_has_dotdot(d) || oodash_has_bad_byte(d) { return true; }
+        let d2: String = guard_pct_decode(d);
+        if oodash_has_dotdot(d2) || oodash_has_bad_byte(d2) { return true; }
+    }
+    return false;
+}
+
+pub fn oodash_header(req: String, want_lower: String) -> String {
+    let sep: Int = str_index_of(req, "\r\n\r\n");
+    let head: String = if sep >= 0 { str_slice(req, 0, sep) } else { req };
+    let ls: List[String] = str_split(head, "\r\n");
+    let mut i: Int = 1;
+    while i < list_len(ls) {
+        let ln: String = list_get(ls, i);
+        let col: Int = str_index_of(ln, ":");
+        if col <= 0 {
+            i = i + 1;
+            continue;
+        }
+        let rk: String = str_trim(str_slice(ln, 0, col));
+        let mut out: List[Int] = bytes_new();
+        let mut j: Int = 0;
+        while j < bytes_len(rk) {
+            let b: Int = byte_at(rk, j);
+            out = bytes_push(out, if b >= 65 && b <= 90 { b + 32 } else { b });
+            j = j + 1;
+        }
+        if bytes_to_str(out) == want_lower {
+            return str_trim(str_slice(ln, col + 1, chars_len(ln)));
+        }
+        i = i + 1;
+    }
+    return "";
+}
+
+pub fn oodash_form_val(body: String, key: String) -> String {
+    let parts: List[String] = str_split(body, "&");
+    let pfx: String = key + "=";
+    let mut i: Int = 0;
+    while i < list_len(parts) {
+        let seg: String = str_trim(list_get(parts, i));
+        if str_starts_with(seg, pfx) {
+            return str_slice(seg, chars_len(pfx), chars_len(seg));
+        }
+        i = i + 1;
+    }
+    return "";
+}
+
+pub fn oodash_const_eq(a: String, b: String) -> Bool {
+    if a == "" || b == "" { return false; }
+    let na: Int = bytes_len(a);
+    let nb: Int = bytes_len(b);
+    if na != nb { return false; }
+    let mut diff: Int = 0;
+    let mut i: Int = 0;
+    while i < na {
+        diff = diff | (byte_at(a, i) ^ byte_at(b, i));
+        i = i + 1;
+    }
+    return diff == 0;
+}

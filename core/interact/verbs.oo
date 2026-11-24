@@ -1,0 +1,111 @@
+// # Dashboard Zero-Shell Allowlisted Interactive Dispatcher
+//
+// Logline: Executes read-only system queries and control transitions via an explicit fail-closed allowlist.
+// Setup: Rejects traversal, control chars, and shell metacharacters; reuses rx_dashboard and ooda-connect state.
+// Beats:
+//   1. Validate verb and target strings fail-closed against metacharacters and '..'.
+//   2. Serve allowlisted observation verbs (overview, telemetry, services, containers, realms, storage, gpu, slots).
+//   3. Translate interactive control verbs onto oodash_store_apply_ctrl cleanly.
+
+import "core/store/rx_dashboard.oo";
+import "core/store/ctrl.oo";
+import "core/connect/registry.oo";
+import "ooda-standard/core/format/json_writer.oo";
+import "ooda-standard/core/format/json_writer/json_writer.oo";
+
+pub type DashInteractOut = struct {
+    store: RxDashboardStore,
+    verb: String,
+    target: String,
+    kind: String,
+    json: String
+};
+
+pub fn oodash_interact_safe(s: String) -> Bool {
+    if str_contains(s, "..") { return false; }
+    let n: Int = bytes_len(s);
+    if n > 128 { return false; }
+    let mut i: Int = 0;
+    while i < n {
+        let b: Int = byte_at(s, i);
+        if b < 32 || b == 127 { return false; }
+        if b == 59 || b == 124 || b == 38 || b == 96 || b == 36 || b == 60 || b == 62 { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
+pub fn oodash_interact_help() -> String {
+    return "observe: overview telemetry services connect containers realms storage gpu slots\n" +
+        "control: airgap-on airgap-off regime rollback container-start container-stop " +
+        "realm-start realm-stop realm-quarantine pool-scrub pool-drain share-revoke gpu-profile";
+}
+
+fn interact_map_action(verb: String) -> String {
+    if verb == "airgap-on" { return "airgap_on"; }
+    if verb == "airgap-off" { return "airgap_off"; }
+    if verb == "regime" { return "firewall_regime"; }
+    if verb == "rollback" { return "slot_rollback"; }
+    if verb == "container-start" { return "container_start"; }
+    if verb == "container-stop" { return "container_stop"; }
+    if verb == "realm-start" { return "realm_start"; }
+    if verb == "realm-stop" { return "realm_stop"; }
+    if verb == "realm-quarantine" { return "realm_quarantine"; }
+    if verb == "pool-scrub" { return "pool_scrub"; }
+    if verb == "pool-drain" { return "pool_drain"; }
+    if verb == "share-revoke" { return "share_revoke"; }
+    if verb == "gpu-profile" { return "gpu_profile"; }
+    return "";
+}
+
+fn interact_observe_json(s: RxDashboardStore, conn: DashConnectState, verb: String) -> Result[String, String] {
+    if verb == "overview" || verb == "telemetry" || verb == "slots" ||
+        verb == "containers" || verb == "realms" || verb == "storage" || verb == "gpu" {
+        return Ok(oodash_store_json(s));
+    }
+    if verb == "services" || verb == "connect" {
+        return Ok(oodash_connect_services_json(conn));
+    }
+    return Err("unknown interact verb '" + verb + "'");
+}
+
+pub fn oodash_interact_json(o: DashInteractOut) -> String {
+    let mut w: JsonWriter = json_writer_start_object(json_writer_new(false));
+    w = json_writer_key(w, "component");
+    w = json_writer_string(w, "ooda-dashboard");
+    w = json_writer_key(w, "kind");
+    w = json_writer_string(w, o.kind);
+    w = json_writer_key(w, "verb");
+    w = json_writer_string(w, o.verb);
+    w = json_writer_key(w, "target");
+    w = json_writer_string(w, o.target);
+    w = json_writer_key(w, "ok");
+    w = json_writer_bool(w, true);
+    w = json_writer_key(w, "result");
+    return json_writer_finish(w) + o.json + "}";
+}
+
+pub fn oodash_interact_run(
+    s: RxDashboardStore, conn: DashConnectState, verb: String, target: String
+) -> Result[DashInteractOut, String] {
+    if verb == "" || !oodash_interact_safe(verb) || !oodash_interact_safe(target) {
+        return Err("refused empty or disallowed interact operand");
+    }
+    let act: String = interact_map_action(verb);
+    if act != "" {
+        let cr: Result[RxDashboardStore, String] = oodash_store_apply_ctrl(s, act, target);
+        if cr.is_err() { return Err(cr.err); }
+        let mut ns: RxDashboardStore = cr.val;
+        ns.last_interact = verb;
+        return Ok(DashInteractOut {
+            store: ns, verb: verb, target: target, kind: "control", json: oodash_store_json(ns)
+        });
+    }
+    let oj: Result[String, String] = interact_observe_json(s, conn, verb);
+    if oj.is_err() { return Err(oj.err); }
+    let mut ns2: RxDashboardStore = s;
+    ns2.last_interact = verb;
+    return Ok(DashInteractOut {
+        store: ns2, verb: verb, target: target, kind: "observe", json: oj.val
+    });
+}

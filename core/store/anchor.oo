@@ -1,0 +1,15 @@
+// # Dashboard Core Reactive Store Anchor
+//
+// Logline: Bundles reactive telemetry store, control transitions, NAS/GPU controller, and host/panel bridge.
+//
+// Setup: Pure barrel shim under core/store/ exporting store, control, pool/gpu, and telemetry APIs.
+//
+// Beats:
+//   1. Import rx_dashboard.oo and ctrl.oo.
+//   2. Import pool_gpu.oo and telemetry.oo.
+
+import "core/store/rx_dashboard.oo";
+import "core/store/ctrl.oo";
+import "core/store/pool_gpu.oo";
+import "core/store/telemetry.oo";
+// Stay import-only; state mutation and ingest logic live in sibling modules.

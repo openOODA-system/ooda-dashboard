@@ -1,0 +1,73 @@
+// # Dashboard Control-Plane Tabs, Actions & Interact Wasm32 Engine
+//
+// Logline: Exports dashboard tab descriptors and allowlisted control/interact payloads in pure Wasm32 .oo.
+// Setup: Zero-import Wasm32 module writing deterministic action strings to scratch; out-of-range ids return 0.
+// Beats:
+//   1. Publish the 7 canonical Dashboard tabs (E-M, Firewall, Slots, Realms, Pool, GPU, ooda-connect).
+//   2. Encode airgap, slot rollback, firewall regime, Pool/GPU, and interact payloads cleanly.
+//   3. Encode indexed container and realm lifecycle actions fail-closed on invalid indices or ops.
+
+export fn oo_dash_tab_count() -> Int {
+    return 7;
+}
+
+export fn oo_dash_tab_meta(idx: Int) -> Int {
+    oo_wasm_heap_reset();
+    if idx == 0 { return oo_wasm_scratch_write_str("em|E-M Telemetry"); }
+    if idx == 1 { return oo_wasm_scratch_write_str("fw|Firewall & Airgap"); }
+    if idx == 2 { return oo_wasm_scratch_write_str("slot|A/B Boot Slots"); }
+    if idx == 3 { return oo_wasm_scratch_write_str("realm|Containers & Realms"); }
+    if idx == 4 { return oo_wasm_scratch_write_str("pool|OODA-Pool & Shares"); }
+    if idx == 5 { return oo_wasm_scratch_write_str("gpu|GPU & Passthrough"); }
+    if idx == 6 { return oo_wasm_scratch_write_str("connect|ooda-connect & Interact"); }
+    return 0;
+}
+
+export fn oo_dash_action_body(kind: Int, _arg: Int) -> Int {
+    oo_wasm_heap_reset();
+    if kind == 0 { return oo_wasm_scratch_write_str("action=airgap_on"); }
+    if kind == 1 { return oo_wasm_scratch_write_str("action=airgap_off"); }
+    if kind == 2 { return oo_wasm_scratch_write_str("action=slot_rollback"); }
+    if kind == 3 { return oo_wasm_scratch_write_str("action=firewall_regime&regime=CRUISE"); }
+    if kind == 4 { return oo_wasm_scratch_write_str("action=firewall_regime&regime=CORNER_PROTECT"); }
+    if kind == 5 { return oo_wasm_scratch_write_str("action=firewall_regime&regime=CONTAIN_TENANT"); }
+    if kind == 6 { return oo_wasm_scratch_write_str("action=pool_scrub"); }
+    if kind == 7 { return oo_wasm_scratch_write_str("action=pool_drain&target=now"); }
+    if kind == 8 { return oo_wasm_scratch_write_str("action=share_revoke"); }
+    if kind == 9 { return oo_wasm_scratch_write_str("action=gpu_profile&target=compute-parity"); }
+    if kind == 10 { return oo_wasm_scratch_write_str("action=gpu_profile&target=inference"); }
+    if kind == 11 { return oo_wasm_scratch_write_str("action=gpu_profile&target=realm-vfio"); }
+    return 0;
+}
+
+export fn oo_dash_interact_body(kind: Int) -> Int {
+    oo_wasm_heap_reset();
+    if kind == 0 { return oo_wasm_scratch_write_str("verb=overview&target="); }
+    if kind == 1 { return oo_wasm_scratch_write_str("verb=services&target="); }
+    if kind == 2 { return oo_wasm_scratch_write_str("verb=telemetry&target="); }
+    if kind == 3 { return oo_wasm_scratch_write_str("verb=slots&target="); }
+    return 0;
+}
+
+fn wc_unit_act(is_realm: Int, op: Int, idx: Int) -> Int {
+    if is_realm == 0 {
+        if idx == 0 && op == 0 { return oo_wasm_scratch_write_str("action=container_start&target=syncthing"); }
+        if idx == 0 && op == 1 { return oo_wasm_scratch_write_str("action=container_stop&target=syncthing"); }
+        if idx == 1 && op == 0 { return oo_wasm_scratch_write_str("action=container_start&target=jellyfin"); }
+        if idx == 1 && op == 1 { return oo_wasm_scratch_write_str("action=container_stop&target=jellyfin"); }
+        return 0;
+    }
+    if idx == 0 && op == 0 { return oo_wasm_scratch_write_str("action=realm_start&target=app-realm-0"); }
+    if idx == 0 && op == 1 { return oo_wasm_scratch_write_str("action=realm_stop&target=app-realm-0"); }
+    if idx == 0 && op == 2 { return oo_wasm_scratch_write_str("action=realm_quarantine&target=app-realm-0"); }
+    if idx == 1 && op == 0 { return oo_wasm_scratch_write_str("action=realm_start&target=steam-proton"); }
+    if idx == 1 && op == 1 { return oo_wasm_scratch_write_str("action=realm_stop&target=steam-proton"); }
+    if idx == 1 && op == 2 { return oo_wasm_scratch_write_str("action=realm_quarantine&target=steam-proton"); }
+    return 0;
+}
+
+export fn oo_dash_unit_action(is_realm: Int, op: Int, idx: Int) -> Int {
+    oo_wasm_heap_reset();
+    if idx < 0 || idx > 1 || op < 0 || op > 2 { return 0; }
+    return wc_unit_act(is_realm, op, idx);
+}

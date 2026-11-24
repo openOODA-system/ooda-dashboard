@@ -1,0 +1,147 @@
+// # Dashboard ooda-connect Home & Services Catalog Bridge
+//
+// Logline: Resolves OOH_HOME precedence, loads $OOH_HOME/services.oot safely, and serializes service readiness.
+// Setup: Uses FsReadCap and EnvCap cleanly; refuses '..' traversal and control bytes in service rows.
+// Beats:
+//   1. Resolve OODA_CONNECT_HOME / OOH_HOME precedence matching ooda-connect/core/keys.oo.
+//   2. Load built-in port services and overlay validated services.oot entries cleanly.
+//   3. Inspect id_ed25519.pub and authorized_keys readiness and emit deterministic JSON.
+
+import "ooda-standard/fs/process/env.oo";
+import "ooda-standard/fs/os/fs.oo";
+import "ooda-standard/fs/file/fs_grp/fs_invariants.oo";
+import "ooda-standard/core/format/json_writer.oo";
+import "ooda-standard/core/format/json_writer/json_writer.oo";
+
+pub type DashConnectSvc = struct {
+    name: String,
+    kind: String,
+    target: String,
+    caps_csv: String
+};
+
+pub type DashConnectState = struct {
+    home: String,
+    has_identity_key: Bool,
+    has_authorized_keys: Bool,
+    services: List[DashConnectSvc]
+};
+
+pub fn oodash_connect_home(env: &EnvCap, override: String) -> String {
+    if override != "" { return override; }
+    let d1: String = env_get_or(env, "OODA_CONNECT_HOME", "");
+    if d1 != "" { return d1; }
+    let d2: String = env_get_or(env, "OODA_OOH_HOME", env_get_or(env, "OO_OOH_HOME", ""));
+    if d2 != "" { return d2; }
+    let d3: String = env_get_or(env, "OOH_HOME", "");
+    if d3 != "" { return d3; }
+    let d4: String = env_get_or(env, "OODA_OOMESH_HOME", env_get_or(env, "OOMESH_HOME", ""));
+    if d4 != "" { return d4; }
+    let home: String = env_get_or(env, "HOME", "");
+    if home == "" { return ""; }
+    return home + "/.openooda/connect";
+}
+
+pub fn oodash_svc_arg_ok(s: String) -> Bool {
+    if !oo_arg_ok(s) || str_contains(s, " ") { return false; }
+    return chars_len(s) > 0 && chars_len(s) <= 256;
+}
+
+fn conn_default_svcs(env: &EnvCap) -> List[DashConnectSvc] {
+    let dash_addr: String = env_get_or(env, "OOH_DASHBOARD_ADDR", "127.0.0.1:8440");
+    let ooaid_addr: String = env_get_or(env, "OOH_OOAID_ADDR", "127.0.0.1:11435");
+    let oollama_addr: String = env_get_or(env, "OOH_OOLLAMA_ADDR", "127.0.0.1:11434");
+    let mut out: List[DashConnectSvc] = list_new();
+    out = list_push(out, DashConnectSvc {
+        name: "ooda-dashboard", kind: "http", target: dash_addr, caps_csv: "Tcp,Process"
+    });
+    out = list_push(out, DashConnectSvc {
+        name: "ooaid", kind: "http", target: ooaid_addr, caps_csv: "Tcp"
+    });
+    out = list_push(out, DashConnectSvc {
+        name: "oollama", kind: "http", target: oollama_addr, caps_csv: "Tcp,Process"
+    });
+    return out;
+}
+
+fn conn_upsert_svc(cur: List[DashConnectSvc], entry: DashConnectSvc) -> List[DashConnectSvc] {
+    let mut out: List[DashConnectSvc] = list_new();
+    let mut i: Int = 0;
+    while i < list_len(cur) {
+        let item: DashConnectSvc = list_get(cur, i);
+        if item.name != entry.name { out = list_push(out, item); }
+        i = i + 1;
+    }
+    return list_push(out, entry);
+}
+
+fn conn_parse_svcs(fs: &FsReadCap, dir: String, base: List[DashConnectSvc]) -> List[DashConnectSvc] {
+    let spath: String = dir + "/services.oot";
+    if dir == "" || !oo_path_ok(dir) || !fs_path_exists(fs, spath) { return base; }
+    let rd: Result[String, String] = fs_read_file(fs, spath);
+    if rd.is_err() { return base; }
+    let mut out: List[DashConnectSvc] = base;
+    let lines: List[String] = str_split(match rd { Ok(s) => s, Err(_) => "" }, "\n");
+    let mut i: Int = 0;
+    while i < list_len(lines) {
+        let row: String = str_trim(list_get(lines, i));
+        let ps: List[String] = if chars_len(row) > 0 && !str_starts_with(row, "#") {
+            str_split(row, "\t")
+        } else { list_new() };
+        if list_len(ps) == 4 && oodash_svc_arg_ok(list_get(ps, 0)) && oodash_svc_arg_ok(list_get(ps, 2)) {
+            let k: String = list_get(ps, 1);
+            if k == "http" || k == "tcp" || k == "exec" {
+                out = conn_upsert_svc(out, DashConnectSvc {
+                    name: list_get(ps, 0), kind: k, target: list_get(ps, 2), caps_csv: list_get(ps, 3)
+                });
+            }
+        }
+        i = i + 1;
+    }
+    return out;
+}
+
+pub fn oodash_connect_load(fs: &FsReadCap, env: &EnvCap, override: String) -> DashConnectState {
+    let dir: String = oodash_connect_home(env, override);
+    let safe_dir: String = if dir != "" && oo_path_ok(dir) { dir } else { "" };
+    let svcs: List[DashConnectSvc] = conn_parse_svcs(fs, safe_dir, conn_default_svcs(env));
+    let id_ok: Bool = safe_dir != "" && fs_path_exists(fs, safe_dir + "/id_ed25519.pub");
+    let auth_ok: Bool = safe_dir != "" && fs_path_exists(fs, safe_dir + "/authorized_keys");
+    return DashConnectState {
+        home: safe_dir, has_identity_key: id_ok, has_authorized_keys: auth_ok, services: svcs
+    };
+}
+
+pub fn oodash_connect_services_json(st: DashConnectState) -> String {
+    let mut w: JsonWriter = json_writer_start_object(json_writer_new(false));
+    w = json_writer_key(w, "component");
+    w = json_writer_string(w, "ooda-dashboard");
+    w = json_writer_key(w, "connect_home");
+    w = json_writer_string(w, st.home);
+    w = json_writer_key(w, "has_identity_key");
+    w = json_writer_bool(w, st.has_identity_key);
+    w = json_writer_key(w, "has_authorized_keys");
+    w = json_writer_bool(w, st.has_authorized_keys);
+    w = json_writer_key(w, "count");
+    w = json_writer_int(w, list_len(st.services));
+    w = json_writer_key(w, "services");
+    w = json_writer_start_array(w);
+    let mut i: Int = 0;
+    while i < list_len(st.services) {
+        let s: DashConnectSvc = list_get(st.services, i);
+        w = json_writer_start_object(w);
+        w = json_writer_key(w, "name");
+        w = json_writer_string(w, s.name);
+        w = json_writer_key(w, "kind");
+        w = json_writer_string(w, s.kind);
+        w = json_writer_key(w, "target");
+        w = json_writer_string(w, s.target);
+        w = json_writer_key(w, "caps");
+        w = json_writer_string(w, s.caps_csv);
+        w = json_writer_end_object(w);
+        i = i + 1;
+    }
+    w = json_writer_end_array(w);
+    w = json_writer_end_object(w);
+    return json_writer_finish(w);
+}

@@ -1,0 +1,15 @@
+// # Dashboard HTTP/WS/SSE Subsystem Anchor
+//
+// Logline: Bundles request guards, OOFEEDBACK 1 route, HTTP/WS/SSE router, and TCP bind server loop.
+//
+// Setup: Pure import shim under core/http/ exposing guard, feedback, routes, and server modules.
+//
+// Beats:
+//   1. Import guard.oo and feedback.oo cleanly.
+//   2. Import routes.oo and server.oo cleanly.
+
+import "core/http/guard.oo";
+import "core/http/feedback.oo";
+import "core/http/routes.oo";
+import "core/http/server.oo";
+// Stay import-only; routing and TCP loop implementations live in sibling modules.

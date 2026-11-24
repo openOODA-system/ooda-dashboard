@@ -1,0 +1,17 @@
+// # ooda-dashboard Core Architecture Anchor
+//
+// Logline: Consolidates reactive store, ooda-connect bridge, interact dispatcher, HTTP/WS/SSE server, and UI HTML.
+//
+// Setup: Pure import shim; exempt from the sixteen-line page floor.
+//
+// Beats:
+//   1. Import core/store, core/connect, and core/interact anchors.
+//   2. Import core/http and core/ui anchors cleanly.
+
+import "core/store/anchor.oo";
+import "core/connect/anchor.oo";
+import "core/interact/anchor.oo";
+import "core/http/anchor.oo";
+import "core/ui/anchor.oo";
+// Anchor note: core/wasm/ compiles separately under --target wasm32-unknown-unknown --shared.
+// Anchor note: keep <= 8 entries per directory cleanly.

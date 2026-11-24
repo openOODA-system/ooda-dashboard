@@ -1,0 +1,17 @@
+// # ooda-dashboard Version Stamp
+//
+// Logline: Single source of truth for the ooda-dashboard semver string and release banner.
+//
+// Setup: Pure metadata getters consumed by cli/about.oo, cli/cmd.oo, and cli/main.oo.
+//
+// Beats:
+//   1. oodash_version() returns the canonical release semver string.
+//   2. oodash_banner() returns the human-readable single-line banner.
+
+pub fn oodash_version() -> String {
+    return "0.1.0";
+}
+
+pub fn oodash_banner() -> String {
+    return "ooda-dashboard v0.1.0 (openOODA-system web, port, and ooda-connect system dashboard)";
+}

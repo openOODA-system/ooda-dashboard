@@ -1,0 +1,74 @@
+// # ooda-dashboard v0.1.0 Refusal Suite — Negative-Trust CLI, Interact, Connect & HTTP Gates
+//
+// Logline: Verifies exit 2 across unknown flags, retired flags, bad targets, traversal, and HTTP 401/400 gates.
+// Setup: Runs dist/ooda-dashboard via sys_exec_wait under PATH=/nonexistent and invokes td_test_http_ref.
+// Beats:
+//   1. Assert all 10 CLI subcommands reject --definitely-unknown-flag with exit 2.
+//   2. Refuse retired persona flags, bad targets, '-- -x', '..' traversal, bad ports, and shell metachars (exit 2).
+//   3. Assert HTTP 401 unauthorized, 400 bad actions/interact/traversal/WS key, and disposed owner gates.
+
+import "tests/dash_harness.oo";
+import "tests/tcp_tests.oo";
+import "core/connect/anchor.oo";
+import "ooda-standard/fs/os/fs.oo";
+
+fn t_subcmd_flags(p: &ProcessCap, bin: String) -> Int {
+    let s1: String = "serve,snapshot,sse,connect,interact,status,verify,inspect,about,theme";
+    let subs: List[String] = str_split(s1, ",");
+    let mut ok_all: Bool = true;
+    let mut i: Int = 0;
+    while i < list_len(subs) {
+        let rc: Int = td_wait(p, bin, list_get(subs, i), "--definitely-unknown-flag", "", "");
+        if rc != 2 {
+            println("FAIL subcmd unknown flag: " + list_get(subs, i) + " rc=" + rc.to_string());
+            ok_all = false;
+        }
+        i = i + 1;
+    }
+    return td_wrc(if ok_all { 0 } else { 1 }, 0, "all 10 subcommands reject --definitely-unknown-flag exit 2");
+}
+
+fn t_cli_gates(p: &ProcessCap, bin: String) -> Int {
+    let mut n: Int = 0;
+    n = n + td_wrc(td_wait(p, bin, "--definitely-unknown-flag", "", "", ""), 2, "top-level unknown flag exit 2");
+    n = n + td_wrc(td_wait(p, bin, "nosuchsubcmd", "", "", ""), 2, "unknown subcommand exit 2");
+    n = n + td_wrc(td_wait(p, bin, "--persona", "serve", "", ""), 2, "retired --persona exit 2");
+    n = n + td_wrc(td_wait(p, bin, "--mode", "serve", "", ""), 2, "retired --mode exit 2");
+    n = n + td_wrc(td_wait(p, bin, "--persona=serve", "", "", ""), 2, "retired --persona= exit 2");
+    n = n + td_wrc(td_wait(p, bin, "--personas", "", "", ""), 2, "retired --personas exit 2");
+    n = n + td_wrc(td_wait(p, bin, "--list-personas", "", "", ""), 2, "retired --list-personas exit 2");
+    n = n + td_wrc(td_wait(p, bin, "about", "nosuchtarget", "", ""), 2, "bad about target exit 2");
+    n = n + td_wrc(td_wait(p, bin, "inspect", "nosuchtarget", "", ""), 2, "bad inspect target exit 2");
+    n = n + td_wrc(td_wait(p, bin, "theme", "nosuchtheme", "", ""), 2, "bad theme target exit 2");
+    n = n + td_wrc(td_wait(p, bin, "--", "-x", "", ""), 2, "flag-as-operand -- -x exit 2");
+    n = n + td_wrc(td_wait(p, bin, "..", "", "", ""), 2, "top-level traversal exit 2");
+    n = n + td_wrc(td_wait(p, bin, "serve", "--wasm", "..", ""), 2, "serve --wasm traversal exit 2");
+    n = n + td_wrc(td_wait(p, bin, "serve", "--port", "99999", ""), 2, "serve invalid --port exit 2");
+    n = n + td_wrc(td_wait(p, bin, "connect", "--connect-home", "..", ""), 2, "connect traversal exit 2");
+    n = n + td_wrc(td_wait6(p, bin, "connect", "register", "--host", "..", "", ""), 2,
+        "connect register bad host exit 2");
+    n = n + td_wrc(td_wait(p, bin, "interact", "bad;cmd", "", ""), 2, "interact metacharacter exit 2");
+    n = n + td_wrc(td_wait(p, bin, "feedback", "--save", "--bad-flag", ""), 2, "feedback unknown flag exit 2");
+    n = n + t_subcmd_flags(p, bin);
+    return n;
+}
+
+pub fn main(
+    fs: &FsReadCap, env: &EnvCap, proc: &ProcessCap, _args: List[String]
+) -> Result[Int, String] {
+    let bin: String = if fs_path_exists(fs, "dist/ooda-dashboard") {
+        "dist/ooda-dashboard"
+    } else {
+        "bin/ooda-dashboard"
+    };
+    if !fs_path_exists(fs, bin) {
+        println("FAIL dist/ooda-dashboard not found");
+        return Err("no binary");
+    }
+    let conn_st: DashConnectState = oodash_connect_load(fs, env, "");
+    let mut n: Int = t_cli_gates(proc, bin);
+    n = n + td_test_http_ref(fs, conn_st);
+    println((if n == 22 { "PASS: " } else { "FAIL: " }) + "refusal " + n.to_string() + "/22 assertions");
+    if n == 22 { return Ok(0); }
+    return Err("refusal suite failed");
+}

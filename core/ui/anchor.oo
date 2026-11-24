@@ -1,0 +1,13 @@
+// # Dashboard Browser UI Anchor
+//
+// Logline: Bundles pure-.oo single-page dashboard HTML/CSS/Wasm bridge and WebGPU /wui surface emitter.
+//
+// Setup: Pure import shim under core/ui/ exposing page_html.oo and wui_page.oo.
+//
+// Beats:
+//   1. Import page_html.oo for the main dark-phosphor interactive system dashboard.
+//   2. Import wui_page.oo for /wui and /api/wui/scene WebGPU SDF/MSDF/spring descriptors.
+
+import "core/ui/page_html.oo";
+import "core/ui/wui_page.oo";
+// Stay import-only; HTML/CSS emitters live in sibling modules.

@@ -1,0 +1,215 @@
+// # Dashboard Pure-.oo Reactive Telemetry & Control Store
+//
+// Logline: Owns Signal/Memo/Effect/Node SoA graphs driving live E-M telemetry, control, and ooda-connect state.
+// Setup: Imports reactive/anchor and json_writer; enforces owner liveness, capability masks, and CDT disposal.
+// Beats:
+//   1. Provision root, telemetry, and control owners with CPU/Mem/Ps/Airgap/Slot/Pool/GPU signals and SSE effect.
+//   2. Update signals glitch-free in batches and commit Observe/Act dirty-rect clears cleanly.
+//   3. Serialize RxDashboardStore snapshots with ooda-connect readiness and interact status via JsonWriter.
+
+import "ooda-standard/core/reactive/anchor.oo";
+import "ooda-standard/core/format/json_writer.oo";
+import "ooda-standard/core/format/json_writer/json_writer.oo";
+
+pub type RxDashboardStore = struct {
+    rt: ReactiveRuntime,
+    cap_mask: Int,
+    root_owner: Int,
+    tel_owner: Int,
+    ctrl_owner: Int,
+    sig_cpu: Int,
+    sig_mem: Int,
+    sig_ps: Int,
+    sig_airgap: Int,
+    sig_slot: Int,
+    sig_pool_health: Int,
+    sig_tier0_pct: Int,
+    sig_gpu_util: Int,
+    memo_pressure: Int,
+    eff_sse: Int,
+    node_em: Int,
+    node_ctrl: Int,
+    seq: Int,
+    fw_epoch: Int,
+    rollback_epoch: Int,
+    regime: String,
+    health_seq: Int,
+    panel_slot: Int,
+    c0_state: String,
+    c1_state: String,
+    r0_state: String,
+    r1_state: String,
+    pool_parity: String,
+    pool_scrub_epoch: Int,
+    pool_drain_state: String,
+    shares_active: Int,
+    oofn1_epoch: Int,
+    gpu_profile: String,
+    gpu_passthrough: String,
+    connect_home: String,
+    connect_services: Int,
+    connect_mesh_ready: Bool,
+    last_interact: String
+};
+
+pub fn dash_regime_str(ps: Int, prs: Int, airgap: Int) -> String {
+    if airgap != 0 { return "AIRGAP_LOCKDOWN"; }
+    if ps < -40 { return "SELF_HEAL"; }
+    if prs >= 90 || ps < -15 { return "CONTAIN_TENANT"; }
+    if prs >= 70 || ps < 10 { return "CORNER_PROTECT"; }
+    return "CRUISE";
+}
+
+pub fn oodash_store_new(cap_mask: Int) -> RxDashboardStore {
+    let mut r: ReactiveRuntime = rx_root_create(rx_runtime_new(), cap_mask);
+    let ro: Int = rx_last_owner(r);
+    r = rx_owner_create_child(r, ro, cap_mask & 7);
+    let to: Int = rx_last_owner(r);
+    r = rx_owner_create_child(r, ro, cap_mask & 15);
+    let co: Int = rx_last_owner(r);
+    r = rx_signal_create(r, to, 12);
+    let sc: Int = rx_last_sig(r);
+    r = rx_signal_create(r, to, 24);
+    let sm: Int = rx_last_sig(r);
+    r = rx_signal_create(r, to, 64);
+    let sp: Int = rx_last_sig(r);
+    r = rx_signal_create(r, co, 0);
+    let sa: Int = rx_last_sig(r);
+    r = rx_signal_create(r, co, 0);
+    let ss: Int = rx_last_sig(r);
+    r = rx_signal_create(r, to, 100);
+    let sph: Int = rx_last_sig(r);
+    r = rx_signal_create(r, to, 28);
+    let st0: Int = rx_last_sig(r);
+    r = rx_signal_create(r, to, 14);
+    let sgu: Int = rx_last_sig(r);
+    r = rx_memo_create(r, ro, sc, sm, RX_OP_MAX);
+    let mp: Int = rx_last_sig(r);
+    r = rx_effect_create(r, ro, mp, "dashboard-sse-delta");
+    let eid: Int = rx_last_effect(r);
+    r = rx_node_create(r, ro, mp, 0, 0, 960, 540);
+    let ne: Int = rx_last_node(r);
+    r = rx_node_create(r, co, sa, 960, 0, 960, 540);
+    let nc: Int = rx_last_node(r);
+    return RxDashboardStore {
+        rt: r, cap_mask: cap_mask, root_owner: ro, tel_owner: to, ctrl_owner: co,
+        sig_cpu: sc, sig_mem: sm, sig_ps: sp, sig_airgap: sa, sig_slot: ss,
+        sig_pool_health: sph, sig_tier0_pct: st0, sig_gpu_util: sgu,
+        memo_pressure: mp, eff_sse: eid, node_em: ne, node_ctrl: nc, seq: 0,
+        fw_epoch: 1, rollback_epoch: 0, regime: "CRUISE", health_seq: 0, panel_slot: 0,
+        c0_state: "running", c1_state: "stopped", r0_state: "ready", r1_state: "stopped",
+        pool_parity: "P+Q", pool_scrub_epoch: 0, pool_drain_state: "cruise",
+        shares_active: 3, oofn1_epoch: 1, gpu_profile: "compute-parity", gpu_passthrough: "host-shared",
+        connect_home: "", connect_services: 3, connect_mesh_ready: false, last_interact: "overview"
+    };
+}
+
+pub fn oodash_store_tick(s: RxDashboardStore, cpu: Int, mem: Int, ps: Int) -> RxDashboardStore {
+    if (s.cap_mask & 1) == 0 || !rx_owner_alive(s.rt, s.tel_owner) { return s; }
+    if cpu < 0 || cpu > 100 || mem < 0 || mem > 100 || ps < -100 || ps > 100 { return s; }
+    let mut r: ReactiveRuntime = rx_batch_begin(s.rt);
+    r = rx_signal_set(r, s.sig_cpu, cpu);
+    r = rx_signal_set(r, s.sig_mem, mem);
+    r = rx_signal_set(r, s.sig_ps, ps);
+    r = rx_batch_end(r);
+    let air: Int = rx_signal_get(r, s.sig_airgap);
+    let prs: Int = rx_signal_get(r, s.memo_pressure);
+    let mut ns: RxDashboardStore = s;
+    ns.rt = r;
+    ns.seq = s.seq + 1;
+    ns.regime = dash_regime_str(ps, prs, air);
+    return ns;
+}
+
+pub fn oodash_store_commit(s: RxDashboardStore) -> RxDashboardStore {
+    if (s.cap_mask & 1) == 0 || !rx_owner_alive(s.rt, s.root_owner) { return s; }
+    let mut r: ReactiveRuntime = rx_effect_observe(s.rt, s.eff_sse);
+    r = rx_effect_act(r, s.eff_sse);
+    r = rx_node_clear_dirty(r);
+    let mut ns: RxDashboardStore = s;
+    ns.rt = r;
+    return ns;
+}
+
+pub fn oodash_store_dispose_tel(s: RxDashboardStore) -> RxDashboardStore {
+    let mut ns: RxDashboardStore = s;
+    ns.rt = rx_owner_dispose(s.rt, s.tel_owner);
+    return ns;
+}
+
+fn dash_nas_json_tail(w0: JsonWriter, s: RxDashboardStore) -> JsonWriter {
+    let mut w: JsonWriter = json_writer_key(w0, "pool_health");
+    w = json_writer_int(w, rx_signal_get(s.rt, s.sig_pool_health));
+    w = json_writer_key(w, "pool_parity");
+    w = json_writer_string(w, s.pool_parity);
+    w = json_writer_key(w, "pool_scrub_epoch");
+    w = json_writer_int(w, s.pool_scrub_epoch);
+    w = json_writer_key(w, "tier0_pct");
+    w = json_writer_int(w, rx_signal_get(s.rt, s.sig_tier0_pct));
+    w = json_writer_key(w, "pool_drain_state");
+    w = json_writer_string(w, s.pool_drain_state);
+    w = json_writer_key(w, "shares_active");
+    w = json_writer_int(w, s.shares_active);
+    w = json_writer_key(w, "oofn1_epoch");
+    w = json_writer_int(w, s.oofn1_epoch);
+    w = json_writer_key(w, "gpu_util");
+    w = json_writer_int(w, rx_signal_get(s.rt, s.sig_gpu_util));
+    w = json_writer_key(w, "gpu_profile");
+    w = json_writer_string(w, s.gpu_profile);
+    w = json_writer_key(w, "gpu_passthrough");
+    w = json_writer_string(w, s.gpu_passthrough);
+    w = json_writer_key(w, "connect_services");
+    w = json_writer_int(w, s.connect_services);
+    w = json_writer_key(w, "connect_mesh_ready");
+    w = json_writer_bool(w, s.connect_mesh_ready);
+    w = json_writer_key(w, "last_interact");
+    return json_writer_string(w, s.last_interact);
+}
+
+fn dash_core_json_head(w0: JsonWriter, s: RxDashboardStore) -> JsonWriter {
+    let mut w: JsonWriter = json_writer_key(w0, "component");
+    w = json_writer_string(w, "ooda-dashboard");
+    w = json_writer_key(w, "seq");
+    w = json_writer_int(w, s.seq);
+    w = json_writer_key(w, "cpu");
+    w = json_writer_int(w, rx_signal_get(s.rt, s.sig_cpu));
+    w = json_writer_key(w, "mem");
+    w = json_writer_int(w, rx_signal_get(s.rt, s.sig_mem));
+    w = json_writer_key(w, "pressure");
+    w = json_writer_int(w, rx_signal_get(s.rt, s.memo_pressure));
+    w = json_writer_key(w, "ps");
+    w = json_writer_int(w, rx_signal_get(s.rt, s.sig_ps));
+    w = json_writer_key(w, "regime");
+    w = json_writer_string(w, s.regime);
+    w = json_writer_key(w, "airgap");
+    w = json_writer_bool(w, rx_signal_get(s.rt, s.sig_airgap) != 0);
+    w = json_writer_key(w, "fw_epoch");
+    w = json_writer_int(w, s.fw_epoch);
+    w = json_writer_key(w, "active_slot");
+    w = json_writer_string(w, if rx_signal_get(s.rt, s.sig_slot) == 0 { "A" } else { "B" });
+    w = json_writer_key(w, "rollback_epoch");
+    return json_writer_int(w, s.rollback_epoch);
+}
+
+pub fn oodash_store_json(s: RxDashboardStore) -> String {
+    let dr: RxDirtyRect = rx_dirty_rect(s.rt);
+    let mut w: JsonWriter = json_writer_start_object(json_writer_new(false));
+    w = dash_core_json_head(w, s);
+    w = json_writer_key(w, "health_seq");
+    w = json_writer_int(w, s.health_seq);
+    w = json_writer_key(w, "panel_slot");
+    w = json_writer_int(w, s.panel_slot);
+    w = json_writer_key(w, "dirty");
+    w = json_writer_int(w, dr.count);
+    w = json_writer_key(w, "syncthing");
+    w = json_writer_string(w, s.c0_state);
+    w = json_writer_key(w, "jellyfin");
+    w = json_writer_string(w, s.c1_state);
+    w = json_writer_key(w, "app_realm_0");
+    w = json_writer_string(w, s.r0_state);
+    w = json_writer_key(w, "steam_proton");
+    w = json_writer_string(w, s.r1_state);
+    w = dash_nas_json_tail(w, s);
+    w = json_writer_end_object(w);
+    return json_writer_finish(w);
+}

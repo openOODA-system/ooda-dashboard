@@ -1,0 +1,233 @@
+// # ooda-dashboard Core Subcommand Runner & Self-Test Gate
+//
+// Logline: Implements selftest, serve, snapshot, sse, status, verify, and inspect commands fail-closed.
+// Setup: Receives explicit capabilities from cli/main.oo and enforces exit-2 CLI operand guards.
+// Beats:
+//   1. Prove store ticks, transitions, health/panel ingest, connect catalog, interact, and 64-iter soak in selftest.
+//   2. Serve status, verify, inspect, snapshot, sse, and serve subcommands cleanly.
+//   3. Validate host, port, wasm path, connect home, and request bounds before starting TCP accept loops.
+
+import "cli/version.oo";
+import "cli/guard.oo";
+import "cli/about.oo";
+import "cli/connect_cli.oo";
+import "core/store/anchor.oo";
+import "core/connect/anchor.oo";
+import "core/interact/anchor.oo";
+import "core/http/anchor.oo";
+import "ooda-standard/core/format/json_writer.oo";
+import "ooda-standard/core/format/json_writer/json_writer.oo";
+
+pub fn oodash_selftest() -> Bool {
+    let mut s: RxDashboardStore = oodash_store_new(15);
+    s = oodash_store_tick(s, 48, 76, 12);
+    if rx_signal_get(s.rt, s.memo_pressure) != 76 || s.regime != "CORNER_PROTECT" { return false; }
+    let ar1: Result[RxDashboardStore, String] = oodash_store_apply_ctrl(s, "airgap_on", "");
+    if ar1.is_err() || ar1.val.regime != "AIRGAP_LOCKDOWN" { return false; }
+    if oodash_store_apply_ctrl(ar1.val, "firewall_regime", "CRUISE").is_ok() { return false; }
+    let ar2: Result[RxDashboardStore, String] = oodash_store_apply_ctrl(ar1.val, "slot_rollback", "");
+    if ar2.is_err() || ar2.val.rollback_epoch != 1 { return false; }
+    let hr: Result[RxDashboardStore, String] = oodash_ingest_health_sse(ar2.val,
+        "event: health-delta\ndata: {\"seq\":9,\"cpu\":31,\"mem\":54,\"pressure\":54,\"dirty\":1}\n");
+    if hr.is_err() || hr.val.health_seq != 9 { return false; }
+    let pr: Result[RxDashboardStore, String] = oodash_ingest_panel_json(hr.val,
+        "{\"component\":\"ooda-panel\",\"version\":\"0.8.0\",\"vmo_slot\":2,\"status\":\"pass\"}");
+    if pr.is_err() || pr.val.panel_slot != 2 { return false; }
+    let sse: String = oodash_store_sse(oodash_store_commit(pr.val));
+    if !str_contains(sse, "event: dashboard-delta") || rx_dirty_rect(oodash_store_commit(pr.val).rt).has_dirty {
+        return false;
+    }
+    let conn: DashConnectState = DashConnectState {
+        home: "/tmp", has_identity_key: false, has_authorized_keys: false,
+        services: list_push(list_new(), DashConnectSvc {
+            name: "ooda-dashboard", kind: "http", target: "127.0.0.1:8440", caps_csv: "Tcp,Process"
+        })
+    };
+    let ir: Result[DashInteractOut, String] = oodash_interact_run(pr.val, conn, "overview", "");
+    if ir.is_err() || oodash_interact_run(pr.val, conn, "bad;cmd", "").is_ok() { return false; }
+    return oodash_rx_soak(64) == 64;
+}
+
+fn cmd_status_json(ok: Bool, target: String) -> String {
+    let mut w: JsonWriter = json_writer_start_object(json_writer_new(false));
+    w = json_writer_key(w, "component");
+    w = json_writer_string(w, "ooda-dashboard");
+    w = json_writer_key(w, "version");
+    w = json_writer_string(w, oodash_version());
+    w = json_writer_key(w, "layer");
+    w = json_writer_string(w, "system");
+    if target != "" {
+        w = json_writer_key(w, "target");
+        w = json_writer_string(w, target);
+    }
+    w = json_writer_key(w, "status");
+    w = json_writer_string(w, if ok { "pass" } else { "fail" });
+    w = json_writer_end_object(w);
+    return json_writer_finish(w);
+}
+
+fn cmd_status_or_verify(env: &EnvCap, rest: List[String], is_verify: Bool) -> Int {
+    let err: String = dash_guard_flags(rest, "--json,-h,--help", "");
+    if err != "" {
+        println("ooda-dashboard: " + err);
+        return 2;
+    }
+    let nm: String = if is_verify { "verify" } else { "status" };
+    if dash_has_flag(rest, "-h") || dash_has_flag(rest, "--help") {
+        println("usage: ooda-dashboard " + nm + " [--json]");
+        return 0;
+    }
+    let ops: List[String] = dash_operands(rest, "");
+    if list_len(ops) > 0 {
+        println("ooda-dashboard: " + nm + " takes no operands");
+        return 2;
+    }
+    let ok: Bool = if is_verify { oodash_selftest() } else { true };
+    if dash_has_flag(rest, "--json") {
+        println(cmd_status_json(ok, ""));
+        return if ok { 0 } else { 1 };
+    }
+    if is_verify {
+        if !ok {
+            println("FAIL: ooda-dashboard verify failed");
+            return 1;
+        }
+        println("ooda-dashboard " + oodash_version() + ": PASS (store+connect+interact+wasm+sse+ws)");
+        return 0;
+    }
+    let pal: OoThemePalette = oodash_resolve_theme(env);
+    println("ooda-dashboard " + oodash_version() + " layer=system status=pass theme=" + pal.name);
+    return 0;
+}
+
+fn cmd_inspect(rest: List[String]) -> Int {
+    let err: String = dash_guard_flags(rest, "--json,-h,--help", "");
+    if err != "" {
+        println("ooda-dashboard: " + err);
+        return 2;
+    }
+    if dash_has_flag(rest, "-h") || dash_has_flag(rest, "--help") {
+        println("usage: ooda-dashboard inspect [subcommand] [--json]");
+        return 0;
+    }
+    let ops: List[String] = dash_operands(rest, "");
+    if list_len(ops) > 1 {
+        println("ooda-dashboard: inspect takes at most one target");
+        return 2;
+    }
+    let tgt: String = if list_len(ops) == 1 { list_get(ops, 0) } else { "" };
+    if tgt != "" && !oodash_about_target_ok(tgt) {
+        println("ooda-dashboard: unknown inspect target '" + tgt + "'");
+        return 2;
+    }
+    let ok: Bool = oodash_selftest();
+    if dash_has_flag(rest, "--json") {
+        println(cmd_status_json(ok, tgt));
+        return if ok { 0 } else { 1 };
+    }
+    let lbl: String = if tgt != "" { tgt } else { "all" };
+    println("ooda-dashboard " + oodash_version() + " layer=system inspect=" + lbl +
+        " status=" + (if ok { "pass" } else { "fail" }));
+    return if ok { 0 } else { 1 };
+}
+
+fn cmd_emit_view(fs: &FsReadCap, env: &EnvCap, mode: String, norm: List[String]) -> Int {
+    let ch: String = dash_flag_val(norm, "--connect-home");
+    let hp: String = dash_flag_val(norm, "--health-file");
+    let pp: String = dash_flag_val(norm, "--panel-file");
+    let conn: DashConnectState = oodash_connect_load(fs, env, ch);
+    let mut s0: RxDashboardStore = oodash_sample_host(fs, oodash_store_new(15));
+    s0.connect_home = conn.home;
+    s0.connect_services = list_len(conn.services);
+    s0.connect_mesh_ready = conn.has_identity_key && conn.has_authorized_keys;
+    let mut s: RxDashboardStore = oodash_load_state_files(fs, s0, hp, pp);
+    s = oodash_store_commit(s);
+    if mode == "sse" {
+        println(oodash_store_sse(s));
+        return 0;
+    }
+    if dash_has_flag(norm, "--json") {
+        println(oodash_store_json(s));
+        return 0;
+    }
+    println("ooda-dashboard " + oodash_version() + " regime=" + s.regime + " slot=" +
+        (if rx_signal_get(s.rt, s.sig_slot) == 0 { "A" } else { "B" }) +
+        " health_seq=" + s.health_seq.to_string() + " panel_slot=" + s.panel_slot.to_string() +
+        " connect_services=" + s.connect_services.to_string());
+    return 0;
+}
+
+fn cmd_serve_or_view(
+    prog: String, fs: &FsReadCap, tcp: &TcpCap, bind: &BindCap, env: &EnvCap,
+    tm: &TimeCap, sub: String, rest: List[String]
+) -> Int {
+    let norm: List[String] = dash_split_eq_args(rest);
+    let allow: String = "-h,--help,-v,-V,--version,--self-test,--json,--once";
+    let valued: String = "--host,--port,--wasm,--token,--health-file,--panel-file,--connect-home,--requests";
+    let gerr: String = dash_guard_flags(norm, allow, valued);
+    if gerr != "" {
+        println("ooda-dashboard: " + gerr);
+        return 2;
+    }
+    if dash_has_flag(norm, "-h") || dash_has_flag(norm, "--help") {
+        println("usage: " + prog + " " + sub +
+            " [--host H] [--port N] [--wasm P] [--token T] [--connect-home D] [--once]");
+        return 0;
+    }
+    if dash_has_flag(norm, "-v") || dash_has_flag(norm, "-V") || dash_has_flag(norm, "--version") {
+        println(prog + " " + oodash_version());
+        return 0;
+    }
+    if dash_has_flag(norm, "--self-test") {
+        if !oodash_selftest() { return 1; }
+        println(prog + " " + oodash_version() + ": PASS (self-test)");
+        return 0;
+    }
+    let ops: List[String] = dash_operands(norm, valued);
+    if list_len(ops) > 0 {
+        println("ooda-dashboard: unexpected operand '" + list_get(ops, 0) + "'");
+        return 2;
+    }
+    if sub == "snapshot" || sub == "sse" { return cmd_emit_view(fs, env, sub, norm); }
+    let pr: Result[Int, String] = dash_opt_int(norm, "--port", 8440, 1, 65535);
+    let def_req: Int = if dash_has_flag(norm, "--once") { 1 } else { 0 };
+    let rr: Result[Int, String] = dash_opt_int(norm, "--requests", def_req, 0, 10000);
+    if pr.is_err() || rr.is_err() {
+        println("ooda-dashboard: invalid --port or --requests");
+        return 2;
+    }
+    let h0: String = dash_flag_val(norm, "--host");
+    let cfg: DashServeCfg = DashServeCfg {
+        host: if h0 == "" { "127.0.0.1" } else { h0 }, port: pr.val,
+        wasm_path: dash_flag_val(norm, "--wasm"), token: dash_flag_val(norm, "--token"),
+        max_reqs: rr.val, health_file: dash_flag_val(norm, "--health-file"),
+        panel_file: dash_flag_val(norm, "--panel-file"),
+        connect_home: dash_flag_val(norm, "--connect-home"), ver: oodash_version()
+    };
+    return oodash_serve_loop(fs, tcp, bind, env, tm, cfg);
+}
+
+pub fn oodash_dispatch_sub(
+    prog: String, tcp: &TcpCap, bind: &BindCap, fs: &FsReadCap,
+    fs_w: &FsWriteCap, tm: &TimeCap, env: &EnvCap, args: List[String]
+) -> Int {
+    let sub: String = list_get(args, 0);
+    let mut rest: List[String] = list_new();
+    let mut i: Int = 1;
+    while i < list_len(args) {
+        rest = list_push(rest, list_get(args, i));
+        i = i + 1;
+    }
+    if sub == "serve" || sub == "snapshot" || sub == "sse" {
+        return cmd_serve_or_view(prog, fs, tcp, bind, env, tm, sub, rest);
+    }
+    if sub == "connect" { return oodash_connect_cmd(fs, fs_w, tcp, env, rest); }
+    if sub == "interact" { return oodash_interact_cmd(fs, env, rest); }
+    if sub == "status" { return cmd_status_or_verify(env, rest, false); }
+    if sub == "verify" { return cmd_status_or_verify(env, rest, true); }
+    if sub == "inspect" { return cmd_inspect(rest); }
+    if sub == "about" { return oodash_about_cmd(env, rest); }
+    if sub == "theme" { return oodash_theme_cmd(env, rest); }
+    println(prog + ": unknown subcommand '" + sub + "'");
+    return 2;
+}

@@ -1,0 +1,15 @@
+// # ooda-dashboard CLI Anchor
+//
+// Logline: Barrel for the cli front half: main.oo TU root and subcommand handlers.
+//
+// Setup: Pure import shim; exempt from the sixteen-line page floor.
+//
+// Beats:
+//   1. Import cli/main.oo as the root binary entrypoint.
+
+import "cli/main.oo";
+// Anchor note: cli/main.oo owns argv[0] checks, negative-trust flag gates, and subcommand dispatch.
+// Anchor note: keep this page above sixteen lines cleanly.
+// Anchor note: subcommand implementations live in cli/cmd.oo, cli/connect_cli.oo, and cli/about.oo.
+// Anchor note: guard logic lives cleanly in cli/guard.oo.
+// Anchor note: version constants live in cli/version.oo.

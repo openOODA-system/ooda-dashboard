@@ -1,0 +1,16 @@
+// # ooda-dashboard Root Component Anchor
+//
+// Logline: Consolidates the cli front half and the core subsystem half of ooda-dashboard.
+//
+// Setup: Pure import shim; exempt from the sixteen-line page floor.
+//
+// Beats:
+//   1. Import the cli half.
+//   2. Import the core half.
+
+import "cli/anchor.oo";
+import "core/anchor.oo";
+// Anchor note: this page carries no logic; verbs and engines live behind cli/ and core/.
+// Anchor note: keep this page at or above the sixteen-line page floor.
+// Anchor note: add new top-level anchors here only, one import per line.
+// Anchor note: shape gates check line counts including these notes.

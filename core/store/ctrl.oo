@@ -1,0 +1,118 @@
+// # Dashboard Control Transitions & Bounded Scratch Soak Driver
+//
+// Logline: Executes capability-gated firewall, airgap, A/B slot rollback, container, and realm mutations.
+// Setup: Imports rx_dashboard cleanly; keeps reactive state updates glitch-free and bounded-arena soak tested.
+// Beats:
+//   1. Validate container and realm transition targets against explicit allowlists (fail-closed Err).
+//   2. Gate airgap lock, firewall regime, A/B slot rollback, and unit transitions behind capability bit 2.
+//   3. Exercise fixed-point reactive create-tick-json-commit-dispose cycles inside scratch arenas cleanly.
+
+import "core/store/rx_dashboard.oo";
+import "core/store/pool_gpu.oo";
+
+fn dash_apply_unit(s: RxDashboardStore, act: String, tgt: String) -> Result[RxDashboardStore, String] {
+    let mut ns: RxDashboardStore = s;
+    if act == "container_start" || act == "container_stop" {
+        let st: String = if act == "container_start" { "running" } else { "stopped" };
+        if tgt == "syncthing" {
+            ns.c0_state = st;
+            return Ok(ns);
+        }
+        if tgt == "jellyfin" {
+            ns.c1_state = st;
+            return Ok(ns);
+        }
+        return Err("unknown container target");
+    }
+    if act == "realm_start" || act == "realm_stop" || act == "realm_quarantine" {
+        let rst: String = if act == "realm_start" {
+            "running"
+        } else if act == "realm_quarantine" {
+            "quarantined"
+        } else {
+            "stopped"
+        };
+        if tgt == "app-realm-0" {
+            ns.r0_state = rst;
+            return Ok(ns);
+        }
+        if tgt == "steam-proton" {
+            ns.r1_state = rst;
+            return Ok(ns);
+        }
+        return Err("unknown realm target");
+    }
+    return Err("unknown control action");
+}
+
+pub fn oodash_store_apply_ctrl(s: RxDashboardStore, act: String, tgt: String) -> Result[RxDashboardStore, String] {
+    if (s.cap_mask & 2) == 0 || !rx_owner_alive(s.rt, s.ctrl_owner) {
+        return Err("control capability denied or disposed");
+    }
+    let mut ns: RxDashboardStore = s;
+    if act == "airgap_on" || act == "airgap_off" {
+        let av: Int = if act == "airgap_on" { 1 } else { 0 };
+        let mut r: ReactiveRuntime = rx_batch_begin(s.rt);
+        r = rx_signal_set(r, s.sig_airgap, av);
+        r = rx_batch_end(r);
+        ns.rt = r;
+        ns.fw_epoch = s.fw_epoch + 1;
+        ns.seq = s.seq + 1;
+        ns.regime = dash_regime_str(rx_signal_get(r, s.sig_ps), rx_signal_get(r, s.memo_pressure), av);
+        return Ok(ns);
+    }
+    if act == "firewall_regime" {
+        if rx_signal_get(s.rt, s.sig_airgap) != 0 { return Err("locked in AIRGAP_LOCKDOWN"); }
+        if tgt != "CRUISE" && tgt != "CORNER_PROTECT" && tgt != "CONTAIN_TENANT" {
+            return Err("invalid firewall regime");
+        }
+        ns.regime = tgt;
+        ns.fw_epoch = s.fw_epoch + 1;
+        ns.seq = s.seq + 1;
+        return Ok(ns);
+    }
+    if act == "slot_rollback" {
+        let cur: Int = rx_signal_get(s.rt, s.sig_slot);
+        let nxt: Int = if cur == 0 { 1 } else { 0 };
+        let mut r: ReactiveRuntime = rx_batch_begin(s.rt);
+        r = rx_signal_set(r, s.sig_slot, nxt);
+        r = rx_batch_end(r);
+        ns.rt = r;
+        ns.rollback_epoch = s.rollback_epoch + 1;
+        ns.seq = s.seq + 1;
+        return Ok(ns);
+    }
+    let ur: Result[RxDashboardStore, String] = dash_apply_unit(s, act, tgt);
+    if ur.is_err() {
+        if ur.err == "unknown control action" {
+            let nr: Result[RxDashboardStore, String] = oodash_apply_nas_gpu(s, act, tgt);
+            if nr.is_err() { return nr; }
+            let mut out_s: RxDashboardStore = nr.val;
+            out_s.seq = s.seq + 1;
+            return Ok(out_s);
+        }
+        return ur;
+    }
+    ns = ur.val;
+    ns.seq = s.seq + 1;
+    return Ok(ns);
+}
+
+pub fn oodash_rx_soak(ticks: Int) -> Int {
+    let mut done: Int = 0;
+    let mut i: Int = 0;
+    while i < ticks {
+        scratch {
+            let mut s: RxDashboardStore = oodash_store_new(15);
+            s = oodash_store_tick(s, 15 + (i % 75), 25 + (i % 65), 60 - (i % 50));
+            let js: String = oodash_store_json(s);
+            if str_contains(js, "\"component\":\"ooda-dashboard\"") {
+                s = oodash_store_commit(s);
+                s = oodash_store_dispose_tel(s);
+                done = done + 1;
+            }
+        }
+        i = i + 1;
+    }
+    return done;
+}

@@ -1,0 +1,111 @@
+// # Dashboard E-M Telemetry & Regime Wasm32 Engine
+//
+// Logline: Classifies Energy-Maneuverability regimes and formats telemetry badges in pure Wasm32 .oo.
+// Setup: Zero-import linear-memory scratch writer using oo_wasm_heap_reset, write_str, and write_u8.
+// Beats:
+//   1. Classify CRUISE, CORNER_PROTECT, CONTAIN_TENANT, SELF_HEAL, and AIRGAP_LOCKDOWN regimes.
+//   2. Emit fixed regime labels, CSS phosphor colors, and bounded progress bar widths cleanly.
+//   3. Format compact pipe-delimited telemetry badges directly into scratch memory without heap allocs.
+
+export fn oo_dash_regime_code(ps: Int, pressure: Int, airgap: Int) -> Int {
+    if airgap != 0 { return 4; }
+    if ps < -40 { return 3; }
+    if pressure >= 90 || ps < -15 { return 2; }
+    if pressure >= 70 || ps < 10 { return 1; }
+    return 0;
+}
+
+export fn oo_dash_regime_label(code: Int) -> Int {
+    oo_wasm_heap_reset();
+    if code == 4 { return oo_wasm_scratch_write_str("AIRGAP_LOCKDOWN"); }
+    if code == 3 { return oo_wasm_scratch_write_str("SELF_HEAL"); }
+    if code == 2 { return oo_wasm_scratch_write_str("CONTAIN_TENANT"); }
+    if code == 1 { return oo_wasm_scratch_write_str("CORNER_PROTECT"); }
+    return oo_wasm_scratch_write_str("CRUISE");
+}
+
+export fn oo_dash_regime_color(code: Int) -> Int {
+    oo_wasm_heap_reset();
+    if code == 4 { return oo_wasm_scratch_write_str("#ff79c6"); }
+    if code == 3 { return oo_wasm_scratch_write_str("#ff5555"); }
+    if code == 2 { return oo_wasm_scratch_write_str("#ffb86c"); }
+    if code == 1 { return oo_wasm_scratch_write_str("#00e5ff"); }
+    return oo_wasm_scratch_write_str("#50fa7b");
+}
+
+export fn oo_dash_bar_width(pct: Int) -> Int {
+    if pct < 0 { return 0; }
+    if pct > 100 { return 100; }
+    return pct;
+}
+
+fn wa_copy_str_at(off: Int, s: String) -> Int {
+    let n: Int = bytes_len(s);
+    let mut i: Int = 0;
+    while i < n {
+        oo_wasm_scratch_write_u8(off + i, byte_at(s, i));
+        i = i + 1;
+    }
+    return off + n;
+}
+
+fn wa_write_int_at(off0: Int, val0: Int) -> Int {
+    let mut off: Int = off0;
+    let mut v: Int = val0;
+    if v < 0 {
+        oo_wasm_scratch_write_u8(off, 45);
+        off = off + 1;
+        v = 0 - v;
+    }
+    if v == 0 {
+        oo_wasm_scratch_write_u8(off, 48);
+        return off + 1;
+    }
+    let mut div: Int = 1;
+    while div <= v / 10 {
+        div = div * 10;
+    }
+    while div > 0 {
+        oo_wasm_scratch_write_u8(off, 48 + ((v / div) % 10));
+        off = off + 1;
+        div = div / 10;
+    }
+    return off;
+}
+
+export fn oo_dash_format_badge(cpu: Int, mem: Int, ps: Int, airgap: Int) -> Int {
+    oo_wasm_heap_reset();
+    let c0: Int = oo_dash_bar_width(cpu);
+    let m0: Int = oo_dash_bar_width(mem);
+    let prs: Int = if c0 > m0 { c0 } else { m0 };
+    let code: Int = oo_dash_regime_code(ps, prs, airgap);
+    let lbl: String = if code == 4 {
+        "AIRGAP_LOCKDOWN"
+    } else if code == 3 {
+        "SELF_HEAL"
+    } else if code == 2 {
+        "CONTAIN_TENANT"
+    } else if code == 1 {
+        "CORNER_PROTECT"
+    } else {
+        "CRUISE"
+    };
+    let col: String = if code == 4 {
+        "#ff79c6"
+    } else if code == 3 {
+        "#ff5555"
+    } else if code == 2 {
+        "#ffb86c"
+    } else if code == 1 {
+        "#00e5ff"
+    } else {
+        "#50fa7b"
+    };
+    let mut off: Int = wa_copy_str_at(0, lbl);
+    oo_wasm_scratch_write_u8(off, 124);
+    off = wa_copy_str_at(off + 1, col);
+    oo_wasm_scratch_write_u8(off, 124);
+    off = wa_write_int_at(off + 1, prs);
+    oo_wasm_scratch_write_u8(off, 124);
+    return wa_write_int_at(off + 1, ps);
+}
